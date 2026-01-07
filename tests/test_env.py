@@ -9,7 +9,7 @@ class TestChessEnv(unittest.TestCase):
 
     def test_reset(self):
         obs, info = self.env.reset()
-        self.assertEqual(obs['observation'].shape, (20, 8, 8))
+        self.assertEqual(obs['observation'].shape, (116, 8, 8))
         self.assertEqual(obs['action_mask'].shape, (4096,))
         self.assertIsInstance(obs['observation'], torch.Tensor)
         self.assertIsInstance(obs['action_mask'], torch.Tensor)

@@ -36,7 +36,7 @@ class ChessEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(4096)
 
         self.observation_space = gym.spaces.Dict({
-            "observation": gym.spaces.Box(low=0, high=1, shape=(20, 8, 8), dtype=np.float32),
+            "observation": gym.spaces.Box(low=0, high=1, shape=(116, 8, 8), dtype=np.float32),
             "action_mask": gym.spaces.Box(low=0, high=1, shape=(4096,), dtype=np.int8)
         })
 
@@ -71,6 +71,10 @@ class ChessEnv(gym.Env):
             # Standard RL practice: Agent should learn from mask. If it bypasses mask, huge penalty.
             return self._get_obs(), -10.0, True, False, {"error": "illegal_move"}
 
+        # Check for capture
+        captured_piece = self.board.piece_at(move.to_square)
+        info = {"captured_piece": captured_piece.piece_type if captured_piece else None}
+
         # Execute Move
         self.board.push(move)
 
@@ -86,22 +90,26 @@ class ChessEnv(gym.Env):
             terminated = True
             reward = 0.0 #TODO
 
-        return self._get_obs(), reward, terminated, truncated, self._get_info()
+        full_info = self._get_info()
+        full_info.update(info)
+        return self._get_obs(), reward, terminated, truncated, full_info
 
     def _get_obs(self):
         # Get canonical encoding (Torch Tensor)
         obs_tensor = self.encoder.encode(self.board)
 
-        # Get action mask (Torch Tensor)
+        # Get action mask (Torch Tensor) - optimized with bulk indexing
         mask = torch.zeros(4096, dtype=torch.bool, device=self.device)
 
-        for move in self.board.legal_moves:
-            # Map move to action
-            if move.promotion and move.promotion != chess.QUEEN:
-                continue
+        # Collect all valid move indices at once
+        valid_indices = [
+            move.from_square * 64 + move.to_square
+            for move in self.board.legal_moves
+            if not move.promotion or move.promotion == chess.QUEEN
+        ]
 
-            idx = move.from_square * 64 + move.to_square
-            mask[idx] = True
+        if valid_indices:
+            mask[valid_indices] = True
 
         return {
             "observation": obs_tensor,
