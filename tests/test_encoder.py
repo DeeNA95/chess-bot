@@ -11,7 +11,7 @@ class TestStateEncoder(unittest.TestCase):
     def test_starting_board_shape(self):
         board = chess.Board()
         encoded = self.encoder.encode(board)
-        self.assertEqual(encoded.shape, (20, 8, 8))
+        self.assertEqual(encoded.shape, (116, 8, 8))
         self.assertIsInstance(encoded, torch.Tensor)
 
     def test_white_pieces(self):
