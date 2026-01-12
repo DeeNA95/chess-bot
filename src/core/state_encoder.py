@@ -22,49 +22,63 @@ class StateEncoder:
     def __init__(self, device="cpu"):
         self.history_len = 8
         self.planes_per_step = 12
-        self.num_planes = (self.history_len * self.planes_per_step) + 8 + 12 # 96 + 8 + 12 = 116
+        # History (96) + Metadata (8) + Attacks (12 - Unused/Zeros) = 116
+        self.num_planes = (self.history_len * self.planes_per_step) + 8 + 12
         self.shape = (self.num_planes, 8, 8)
         self.device = device
+
+
+    def encode_node(self, node) -> torch.Tensor:
+        """
+        Efficiently encodes state from MCTS node by traversing parents.
+        Avoids board copying/popping by using the tree structure for history.
+        """
+        state = torch.zeros(self.shape, dtype=torch.float32, device=self.device)
+        me = node.board.turn
+
+        # 1. History Planes (0-95)
+        current = node
+        for t in range(self.history_len):
+            base_idx = t * 12
+            if current:
+                self._encode_pieces(current.board, state, base_idx, me)
+                current = current.parent
+            else:
+                break
+
+        # 2. Metadata Planes
+        metadata_idx = self.history_len * self.planes_per_step
+        self._encode_metadata(node.board, state, metadata_idx, me)
+
+        # 3. Attack/Defense Maps (Disabled for speed, planes kept as zeros)
+
+        return state
 
     def encode(self, board: chess.Board) -> torch.Tensor:
         state = torch.zeros(self.shape, dtype=torch.float32, device=self.device)
         me = board.turn
 
+        # Working copy for history traversal
+        # stack=True is needed to pop moves
+        path_board = board.copy(stack=True)
+
         # 1. History Planes (0-95)
-        # We need to traverse back up to history_len - 1 times.
-        # We assume the board object has the move stack.
-        # To strictly preserve the board state without copying, we will pop and then push back.
-
-        moves_popped = []
-
-        # We need to capture 8 states: T, T-1, ..., T-7
-        current_idx = 0
-
         for t in range(self.history_len):
             base_idx = t * 12
+            self._encode_pieces(path_board, state, base_idx, me)
 
-            # Encode pieces for current state
-            self._encode_pieces(board, state, base_idx, me)
-
-            # Prepare for next iteration (previous state)
-            if t < self.history_len - 1: # Don't pop on the last step if not needed
-                if board.move_stack:
-                    move = board.pop()
-                    moves_popped.append(move)
+            if t < self.history_len - 1:
+                if path_board.move_stack:
+                    path_board.pop()
                 else:
-                    # No more history available
                     break
 
-        # Restore board state
-        for move in reversed(moves_popped):
-            board.push(move)
+        # 2. Metadata Planes
+        # Start after history planes
+        metadata_idx = self.history_len * self.planes_per_step
+        self._encode_metadata(board, state, metadata_idx, me)
 
-        # 2. Metadata Planes (96-103)
-        # Uses the CURRENT board state (original board, now restored)
-        self._encode_metadata(board, state, 96, me)
 
-        # 3. Attack/Defense Maps (104-115)
-        self._encode_attacks(board, state, 104, me)
 
         return state
 
@@ -73,17 +87,25 @@ class StateEncoder:
         me = perspective
         enemy = not me
 
+        # Pre-compute rank/file lookups if we were strict, but python-chess is fast enough here
+        # or we optimize _map_sq inlined.
+
         # My Pieces
         for i, piece_type in enumerate(PIECE_TYPES):
-            # 0-5
-            bb = board.pieces_mask(piece_type, me)
-            self._fill_plane_from_bitboard(state, base_idx + i, bb, perspective)
+            for sq in board.pieces(piece_type, me):
+                # Inline mapping
+                r, c = chess.square_rank(sq), chess.square_file(sq)
+                if perspective == chess.BLACK:
+                    r, c = 7 - r, 7 - c
+                state[base_idx + i, r, c] = 1.0
 
         # Enemy Pieces
         for i, piece_type in enumerate(PIECE_TYPES):
-            # 6-11
-            bb = board.pieces_mask(piece_type, enemy)
-            self._fill_plane_from_bitboard(state, base_idx + 6 + i, bb, perspective)
+            for sq in board.pieces(piece_type, enemy):
+                r, c = chess.square_rank(sq), chess.square_file(sq)
+                if perspective == chess.BLACK:
+                    r, c = 7 - r, 7 - c
+                state[base_idx + 6 + i, r, c] = 1.0
 
     def _encode_metadata(self, board, state, base_idx, perspective):
         me = perspective
@@ -101,7 +123,9 @@ class StateEncoder:
 
         # En Passant (100)
         if board.ep_square is not None:
-            r, c = self._map_sq(board.ep_square, perspective)
+            r, c = chess.square_rank(board.ep_square), chess.square_file(board.ep_square)
+            if perspective == chess.BLACK:
+                r, c = 7 - r, 7 - c
             state[base_idx+4, r, c] = 1.0
 
         # Halfmove Clock (clock/50) (101)
@@ -114,48 +138,15 @@ class StateEncoder:
         if perspective == chess.BLACK:
             state[base_idx+7, :, :] = 1.0
 
-    def _encode_attacks(self, board, state, base_idx, perspective):
-        """
-        Computes attack maps - optimized with reduce for bitwise OR.
-        """
-        from functools import reduce
-        from operator import or_
 
-        me = perspective
-        enemy = not me
-
-        # 104-109: My Attacks (P,N,B,R,Q,K)
-        for i, pt in enumerate(PIECE_TYPES):
-            attacks = [int(board.attacks(sq)) for sq in board.pieces(pt, me)]
-            attacks_bb = reduce(or_, attacks, 0) if attacks else 0
-            if attacks_bb:
-                self._fill_plane_from_bitboard(state, base_idx + i, attacks_bb, perspective)
-
-        # 110-115: Enemy Attacks
-        for i, pt in enumerate(PIECE_TYPES):
-            attacks = [int(board.attacks(sq)) for sq in board.pieces(pt, enemy)]
-            attacks_bb = reduce(or_, attacks, 0) if attacks else 0
-            if attacks_bb:
-                self._fill_plane_from_bitboard(state, base_idx + 6 + i, attacks_bb, perspective)
 
     def _fill_plane_from_bitboard(self, state, plane_idx, bitboard, perspective):
         """Helper to fill a tensor plane from an integer bitboard."""
         while bitboard:
             sq = bitboard & -bitboard # LS1B
-            r, c = self._map_sq(sq.bit_length() - 1, perspective)
+            r, c = chess.square_rank(sq.bit_length() - 1), chess.square_file(sq.bit_length() - 1)
+            if perspective == chess.BLACK:
+                r, c = 7 - r, 7 - c
             state[plane_idx, r, c] = 1.0
             bitboard &= bitboard - 1
 
-    def _map_sq(self, sq: int, perspective: chess.Color):
-        """
-        Maps a square integer (0-63) to (row, col) coordinates.
-        If perspective is BLACK, flips the board (row = 7 - row).
-        """
-        r = chess.square_rank(sq)
-        c = chess.square_file(sq)
-
-        if perspective == chess.BLACK:
-            r = 7 - r
-            c = 7 - c
-
-        return r, c

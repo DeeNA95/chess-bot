@@ -26,7 +26,7 @@ volume = modal.Volume.from_name('chess-rl-checkpoints', create_if_missing=True)
 @app.function(
     image=image,
     gpu='t4',
-    cpu=8.0,
+    cpu=2.0,
     timeout=60 * 60 * 24,  # 24 hours
     volumes={'/checkpoints': volume},
     secrets=[modal.Secret.from_name('wandb-secret')]
@@ -34,6 +34,8 @@ volume = modal.Volume.from_name('chess-rl-checkpoints', create_if_missing=True)
 def train_function(
     total_games: int = 10,
     num_simulations: int = 50,
+    num_parallel_games: int = 32,
+    games_per_update: int = 64,
 ):
     """MCTS Self-Play Training - the main training entry point."""
     sys.path.append('/root')
@@ -45,6 +47,8 @@ def train_function(
         total_games=total_games,
         checkpoint_dir='/checkpoints',
         num_simulations=num_simulations,
+        num_parallel_games=num_parallel_games,
+        games_per_update=games_per_update,
     )
 
 

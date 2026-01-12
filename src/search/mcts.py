@@ -1,22 +1,23 @@
 """
 Monte Carlo Tree Search (MCTS) guided by neural network.
-Implements AlphaZero-style search for improved move selection.
+Implements Batched AlphaZero-style search for high-throughput self-play.
 """
 
 import math
 import chess
 import torch
-from typing import Dict, List, Optional, Tuple
+import numpy as np
+from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass, field
 
 
 @dataclass
 class MCTSNode:
     """Node in the MCTS tree."""
-    board: chess.Board
+    board: Optional[chess.Board] = None  # Lazy loaded
     parent: Optional['MCTSNode'] = None
-    move: Optional[chess.Move] = None  # Move that led to this node
-    prior: float = 0.0  # Prior probability from policy network
+    move: Optional[chess.Move] = None    # Move that led to this node
+    prior: float = 0.0                   # Prior probability from policy network
 
     visit_count: int = 0
     value_sum: float = 0.0
@@ -40,10 +41,10 @@ class MCTSNode:
 
 class MCTS:
     """
-    Monte Carlo Tree Search with neural network guidance.
+    Batched Monte Carlo Tree Search.
 
-    Uses policy network for move priors and value network
-    for position evaluation.
+    Runs MCTS for multiple games in parallel to maximize GPU utilization
+    during neural network inference.
     """
 
     def __init__(
@@ -51,7 +52,7 @@ class MCTS:
         model,
         encoder,
         device: str = 'cpu',
-        num_simulations: int = 100,
+        num_simulations: int = 50,
         c_puct: float = 1.5,
         temperature: float = 1.0,
     ):
@@ -62,93 +63,150 @@ class MCTS:
         self.c_puct = c_puct
         self.temperature = temperature
 
-    def search(self, board: chess.Board) -> Tuple[torch.Tensor, float]:
+    def search_batch(self, boards: List[chess.Board]) -> List[Tuple[torch.Tensor, float]]:
         """
-        Run MCTS from the given position.
+        Run Batched MCTS for a list of active games.
+
+        Args:
+            boards: List of current board states (one per game).
 
         Returns:
-            policy: Improved policy (visit counts normalized) as 4096-dim tensor
-            value: Root value estimate
+            List of (policy, root_value) tuples, one for each game.
         """
-        root = MCTSNode(board=board.copy())
-        self._expand_node(root)
+        # Create a fresh search tree for each game
+        roots = [MCTSNode(board=b.copy()) for b in boards]
+
+        # Initial expansion for all roots
+        self._expand_nodes(roots)
 
         for _ in range(self.num_simulations):
-            node = root
-            path = [node]
+            leaves = []
+            paths = []  # Store the path taken for each game
 
-            # Selection: traverse to leaf using UCB
-            while node.is_expanded and node.children:
-                node = self._select_child(node)
-                path.append(node)
+            # 1. Selection
+            for root in roots:
+                node = root
+                path = [node]
 
-            # Check terminal
-            if node.board.is_game_over():
-                value = self._terminal_value(node.board)
-            else:
-                # Expansion & Evaluation
-                if not node.is_expanded:
-                    value = self._expand_node(node)
+                # Traverse down until we hit a leaf or unexpanded node
+                while node.is_expanded and node.children:
+                    node = self._select_child(node)
+                    path.append(node)
+
+                leaves.append(node)
+                paths.append(path)
+
+            # 2. Expansion & Evaluation
+            # We need to filter nodes that are already terminal or expanded
+            nodes_to_expand = []
+            indices_to_expand = []
+            leaf_values = {}  # Map index -> value
+
+            for i, leaf in enumerate(leaves):
+                if leaf.board.is_game_over():
+                    # Game over - terminal value
+                    leaf_values[i] = self._terminal_value(leaf.board)
+                elif not leaf.is_expanded:
+                    # Needs expansion
+                    nodes_to_expand.append(leaf)
+                    indices_to_expand.append(i)
                 else:
-                    value = 0.0
+                    # Already expanded but has no children
+                    leaf_values[i] = 0.0
 
-            # Backpropagation
-            self._backpropagate(path, value)
+            # Batch expansion for all valid leaves
+            if nodes_to_expand:
+                values = self._expand_nodes(nodes_to_expand)
+                for idx, val in zip(indices_to_expand, values):
+                    leaf_values[idx] = val
 
-        # Extract policy from visit counts
-        policy = self._get_policy(root)
-        root_value = root.value
+            # 3. Backpropagation
+            for i, path in enumerate(paths):
+                value = leaf_values[i]
+                self._backpropagate(path, value)
 
-        return policy, root_value
+        # Extract Policies
+        results = []
+        for root in roots:
+            results.append((self._get_policy(root), root.value))
+
+        return results
 
     def _select_child(self, node: MCTSNode) -> MCTSNode:
-        """Select child with highest UCB score."""
-        best_score = -float('inf')
-        best_child = None
+        """Select child with highest UCB score and ensure its board is generated."""
+        best_child = max(
+            node.children.values(),
+            key=lambda child: child.ucb_score(self.c_puct, node.visit_count)
+        )
 
-        for child in node.children.values():
-            score = child.ucb_score(self.c_puct, node.visit_count)
-            if score > best_score:
-                best_score = score
-                best_child = child
+        # Lazy Board Generation
+        if best_child.board is None:
+            assert node.board is not None, "Parent board cannot be None"
+            assert best_child.move is not None, "Child move cannot be None"
+
+            best_child.board = node.board.copy()
+            best_child.board.push(best_child.move)
 
         return best_child
 
-    def _expand_node(self, node: MCTSNode) -> float:
-        """Expand node using neural network. Returns value estimate."""
-        board = node.board
+    def _expand_nodes(self, nodes: List[MCTSNode]) -> List[float]:
+        """
+        Expand a batch of nodes.
+        Runs NN inference once for the whole batch.
 
-        # Get network predictions
-        obs = self.encoder.encode(board).unsqueeze(0).to(self.device)
+        Returns:
+            List of value estimates for each node.
+        """
+        if not nodes:
+            return []
 
+        # Batch encode
+        # Note: Optimization possibility -> batch encode in StateEncoder
+        # but for now list comprehension is robust.
+        obs_list = [self.encoder.encode_node(node) for node in nodes]
+        obs_tensor = torch.stack(obs_list).to(self.device)
+
+        # Batch Inference
+        # Optional: Mixed Precision could be handled here if strictly needed,
+        # but usually handled in trainer or by pure performance of fp32 on inference.
+        # We'll rely on the model's forward
         with torch.no_grad():
-            logits, value = self.model(obs)
+            logits, values = self.model(obs_tensor)
 
-        # Get valid moves and their priors
-        policy_probs = torch.softmax(logits[0], dim=0).cpu().numpy()
+        # Convert to CPU for tree building
+        policy_probs = torch.softmax(logits, dim=1).cpu().numpy()
+        values = values.cpu().numpy().flatten()
 
-        for move in board.legal_moves:
-            # Skip non-Queen promotions
-            if move.promotion and move.promotion != chess.QUEEN:
-                continue
+        # Process each node
+        for i, node in enumerate(nodes):
+            assert node.board is not None, "Node to expand must have a board"
+            board = node.board
+            probs = policy_probs[i]
 
-            action_idx = move.from_square * 64 + move.to_square
-            prior = policy_probs[action_idx]
+            # Mask illegal moves and re-normalize (optional but good for exploration)
+            # Actually AlphaZero relies on the network learning legal moves,
+            # but masking is safer for the tree search.
 
-            # Create child node
-            child_board = board.copy()
-            child_board.push(move)
+            for move in board.legal_moves:
+                # AlphaZero standard: Queen promotion only (simplification)
+                if move.promotion and move.promotion != chess.QUEEN:
+                     continue
 
-            child = MCTSNode(
-                board=child_board,
-                parent=node,
-                move=move,
-                prior=prior,
-            )
-            node.children[action_idx] = child
+                action_idx = move.from_square * 64 + move.to_square
+                prior = probs[action_idx]
 
-        node.is_expanded = True
-        return value.item()
+                # Create child WITHOUT copying board (Lazy)
+                child = MCTSNode(
+                    board=None,  # Will be created on visit
+                    parent=node,
+                    move=move,
+                    prior=float(prior)
+                )
+                node.children[action_idx] = child
+
+            node.is_expanded = True
+
+        return values.tolist()
 
     def _backpropagate(self, path: List[MCTSNode], value: float):
         """Backpropagate value up the path."""
@@ -160,9 +218,7 @@ class MCTS:
     def _terminal_value(self, board: chess.Board) -> float:
         """Get value for terminal position."""
         if board.is_checkmate():
-            # Current player is checkmated = loss = -1
             return -1.0
-        # Draw
         return 0.0
 
     def _get_policy(self, root: MCTSNode) -> torch.Tensor:
@@ -173,46 +229,41 @@ class MCTS:
             return policy
 
         # Collect visit counts
-        total_visits = 0
         for action_idx, child in root.children.items():
             policy[action_idx] = child.visit_count
-            total_visits += child.visit_count
 
-        if total_visits > 0:
+        # Normalize
+        total = policy.sum()
+        if total > 0:
             if self.temperature == 0:
-                # Deterministic: pick best
-                best_action = policy.argmax()
-                policy = torch.zeros(4096, dtype=torch.float32, device=self.device)
-                policy[best_action] = 1.0
+                # Deterministic (argmax) - usually for eval
+                best_idx = policy.argmax()
+                policy.zero_()
+                policy[best_idx] = 1.0
             else:
-                # Apply temperature
-                policy = policy ** (1.0 / self.temperature)
-                policy = policy / policy.sum()
+                # Temperature scaling
+                if self.temperature != 1.0:
+                    policy = policy ** (1.0 / self.temperature)
+                    total = policy.sum()
+                policy = policy / total
 
         return policy
 
     def select_move(self, board: chess.Board) -> Tuple[chess.Move, torch.Tensor, float]:
-        """
-        Run MCTS and select a move.
+        """Legacy helper for single-game compatibility (optional tests)."""
+        results = self.search_batch([board])
+        policy, value = results[0]
 
-        Returns:
-            move: Selected move
-            policy: MCTS policy tensor (for training)
-            value: Position value estimate
-        """
-        policy, value = self.search(board)
-
-        # Sample from policy (during training) or pick best (during play)
+        # Sample action
         if self.temperature > 0:
-            action_idx = torch.multinomial(policy, 1).item()
+            action_idx = int(torch.multinomial(policy, 1).item())
         else:
-            action_idx = policy.argmax().item()
+            action_idx = int(policy.argmax().item())
 
         from_sq = action_idx // 64
         to_sq = action_idx % 64
         move = chess.Move(from_sq, to_sq)
 
-        # Handle promotion
         if chess.square_rank(to_sq) in [0, 7]:
             piece = board.piece_at(from_sq)
             if piece and piece.piece_type == chess.PAWN:
