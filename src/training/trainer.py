@@ -13,6 +13,7 @@ from src.core.state_encoder import StateEncoder
 from src.agents.ppo_agent import ChessAgent
 from src.search.mcts import MCTS
 from src.rl.grpo import GRPO
+from src.rl.ppo import PPO
 from src.core.config import AppConfig
 from src.utils import get_device
 
@@ -34,6 +35,17 @@ class GRPOSample:
     action: int
     old_log_prob: float
     reward: float
+    mask: torch.Tensor
+
+@dataclass
+class PPOSample:
+    """Sample for PPO training."""
+    observation: torch.Tensor
+    action: int
+    log_prob: float
+    reward: float
+    value: float
+    done: bool
     mask: torch.Tensor
 
 class ReplayBuffer:
@@ -178,6 +190,105 @@ def play_games_grpo(
     return all_samples
 
 
+def play_games_ppo(
+    agent: ChessAgent,
+    encoder: StateEncoder,
+    config: AppConfig,
+    device: torch.device,
+    max_moves: int = 200,
+) -> List[PPOSample]:
+    """
+    Play games for PPO. Generates full trajectories.
+    """
+    num_games = config.training.num_parallel_games
+    boards = [chess.Board() for _ in range(num_games)]
+    samples = [[] for _ in range(num_games)]
+    active_indices = list(range(num_games))
+    finished_samples = []
+
+    move_count = 0
+    while active_indices and move_count < max_moves:
+        current_boards = [boards[i] for i in active_indices]
+
+        # Batch Encode
+        obs_list = [encoder.encode(b) for b in current_boards]
+        obs_tensor = torch.stack(obs_list).to(device)
+        masks_list = [encoder.get_action_mask(b) for b in current_boards]
+        masks_tensor = torch.stack(masks_list).to(device)
+
+        with torch.no_grad():
+            logits, values = agent.model(obs_tensor)
+            logits = logits.masked_fill(~masks_tensor, -float('inf'))
+            probs = torch.softmax(logits, dim=-1)
+            dist = torch.distributions.Categorical(probs)
+            actions = dist.sample()
+            log_probs = dist.log_prob(actions)
+
+        next_active_indices = []
+        for i, idx in enumerate(active_indices):
+            board = boards[idx]
+            action_idx = int(actions[i].item())
+
+            # Store partial sample
+            samples[idx].append(PPOSample(
+                observation=obs_list[i].cpu(),
+                action=action_idx,
+                log_prob=float(log_probs[i].item()),
+                reward=0.0, # Filled later
+                value=float(values[i].item()),
+                done=False,
+                mask=masks_list[i].cpu()
+            ))
+
+            # Step
+            move = _action_to_move(board, action_idx)
+            board.push(move)
+
+            if board.is_game_over():
+                reward = 0.0
+                if board.is_checkmate():
+                    reward = 1.0 # Current player (who just moved) won?
+                else:
+                    reward = 0.0 # Draw
+
+                _backfill_rewards(samples[idx], reward)
+                finished_samples.extend(samples[idx])
+            else:
+                next_active_indices.append(idx)
+
+        active_indices = next_active_indices
+        move_count += 1
+
+    # Handle timeouts
+    for idx in active_indices:
+        _backfill_rewards(samples[idx], 0.0)
+        finished_samples.extend(samples[idx])
+
+    return finished_samples
+
+def _backfill_rewards(trajectory: List[PPOSample], final_outcome: float):
+    """
+    Assign rewards for self-play.
+    trajectory contains moves [White, Black, White, Black...]
+    final_outcome is from perspective of the LAST player who moved.
+    Argument 'final_outcome' is +1 if the last mover won.
+    """
+    T = len(trajectory)
+    for t in reversed(range(T)):
+        # If I am the last mover (index T-1), I get final_outcome.
+        # If I am T-2, I am opponent, I get -final_outcome.
+        # This assumes zero-sum.
+
+        # Distance from end: k = (T-1) - t
+        # if k is even: same player as last mover -> +outcome
+        # if k is odd: opponent -> -outcome
+
+        k = (T - 1) - t
+        sign = 1.0 if k % 2 == 0 else -1.0
+        trajectory[t].reward = final_outcome * sign
+        trajectory[t].done = (t == T - 1)
+
+
 def _action_to_move(board: chess.Board, action_idx: int) -> chess.Move:
     from_sq = action_idx // 64
     to_sq = action_idx % 64
@@ -234,8 +345,10 @@ def train_loop(config_path: str = "config.yaml"):
             c_puct=config.mcts.c_puct,
             temperature=config.mcts.temperature,
         )
-    else:
+    elif config.algorithm == "grpo":
         grpo_node = GRPO(config, agent.model)
+    elif config.algorithm == "ppo":
+        ppo_node = PPO(config, agent.model)
 
     optimizer = torch.optim.Adam(agent.model.parameters(), lr=config.training.lr)
     scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
@@ -252,8 +365,10 @@ def train_loop(config_path: str = "config.yaml"):
         start_play = time.time()
         if config.algorithm == "mcts":
             new_samples = play_games_mcts(mcts, encoder, config.training.num_parallel_games, device)
-        else:
+        elif config.algorithm == "grpo":
             new_samples = play_games_grpo(agent, encoder, config, device)
+        else: # ppo
+            new_samples = play_games_ppo(agent, encoder, config, device)
 
         buffer.extend(new_samples)
         games_played += config.training.num_parallel_games
@@ -269,8 +384,10 @@ def train_loop(config_path: str = "config.yaml"):
                 batch = buffer.sample(config.training.batch_size)
                 if config.algorithm == "mcts":
                     metrics = train_step_mcts(agent.model, optimizer, scaler, batch, device)
-                else:
+                elif config.algorithm == "grpo":
                     metrics = train_step_grpo(grpo_node, optimizer, scaler, batch, device)
+                else:
+                    metrics = train_step_ppo(ppo_node, optimizer, scaler, batch, device)
 
                 for k, v in metrics.items():
                     total_metrics[k] = total_metrics.get(k, 0.0) + v
@@ -353,6 +470,38 @@ def train_step_grpo(grpo, optimizer, scaler, samples: List[GRPOSample], device) 
 
     if random.random() < 0.1:
         grpo.update_ref_model()
+
+    return {k: v.item() if isinstance(v, torch.Tensor) else v for k, v in metrics.items()}
+
+
+def train_step_ppo(ppo_node, optimizer, scaler, samples: List[PPOSample], device) -> Dict[str, float]:
+    obs_batch = torch.stack([s.observation for s in samples]).to(device)
+    actions = torch.tensor([s.action for s in samples], device=device)
+    old_log_probs = torch.tensor([s.log_prob for s in samples], device=device)
+    masks = torch.stack([s.mask for s in samples]).to(device)
+
+    rewards = torch.tensor([s.reward for s in samples], device=device)
+    values = torch.tensor([s.value for s in samples], device=device)
+
+    returns = rewards # MC return
+    advantages = returns - values
+
+    # Normalize advantages
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+    dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+    with torch.cuda.amp.autocast(enabled=(device.type == 'cuda'), dtype=dtype):
+        metrics = ppo_node.compute_loss(
+             obs_batch, actions, old_log_probs, returns, advantages, masks
+        )
+    loss = metrics["loss"]
+
+    optimizer.zero_grad()
+    if scaler:
+        scaler.scale(loss).backward()
+        scaler.step(optimizer); scaler.update()
+    else:
+        loss.backward(); optimizer.step()
 
     return {k: v.item() if isinstance(v, torch.Tensor) else v for k, v in metrics.items()}
 

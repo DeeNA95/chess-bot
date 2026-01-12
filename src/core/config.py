@@ -17,6 +17,15 @@ class GRPOSettings:
     entropy_coef: float = 0.01
 
 @dataclass
+class PPOSettings:
+    clip_ratio: float = 0.2
+    value_coef: float = 0.5
+    entropy_coef: float = 0.01
+    gae_lambda: float = 0.95
+    gamma: float = 0.99
+    ppo_epochs: int = 4
+
+@dataclass
 class TrainingSettings:
     total_games: int = 10000
     batch_size: int = 256
@@ -29,10 +38,11 @@ class TrainingSettings:
 
 @dataclass
 class AppConfig:
-    algorithm: Literal["mcts", "grpo"] = "mcts"
+    algorithm: Literal["mcts", "grpo", "ppo"] = "mcts"
     training: TrainingSettings = field(default_factory=TrainingSettings)
     mcts: MCTSSettings = field(default_factory=MCTSSettings)
     grpo: GRPOSettings = field(default_factory=GRPOSettings)
+    ppo: PPOSettings = field(default_factory=PPOSettings)
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> "AppConfig":
@@ -57,6 +67,9 @@ class AppConfig:
 
         if "grpo" in data:
             _update_from_dict(config.grpo, data["grpo"])
+
+        if "ppo" in data:
+            _update_from_dict(config.ppo, data["ppo"])
 
         return config
 

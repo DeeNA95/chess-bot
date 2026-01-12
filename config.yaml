@@ -1,7 +1,5 @@
-# Chess Bot Configuration
-
-# Algorithm Selection: 'mcts' or 'grpo'
-algorithm: "mcts"
+# Algorithm Selection: 'mcts', 'grpo', or 'ppo'
+algorithm: "ppo"
 
 # General Training Settings
 training:
@@ -26,3 +24,12 @@ grpo:
   epsilon: 0.2        # Clipping parameter
   beta_kl: 0.01       # KL penalty coefficient
   entropy_coef: 0.01  # Entropy bonus
+
+# PPO Specific Settings
+ppo:
+  clip_ratio: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  gae_lambda: 0.95
+  gamma: 0.99
+  ppo_epochs: 4
