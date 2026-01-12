@@ -1,0 +1,28 @@
+# Chess Bot Configuration
+
+# Algorithm Selection: 'mcts' or 'grpo'
+algorithm: "mcts"
+
+# General Training Settings
+training:
+  total_games: 10000
+  batch_size: 256
+  games_per_update: 32
+  lr: 0.0001
+  checkpoint_dir: "/checkpoints"
+  buffer_capacity: 100000
+  num_parallel_games: 16
+  device: "cuda"  # 'cpu', 'cuda', 'mps' (auto-detected if cleaner)
+
+# MCTS Specific Settings
+mcts:
+  num_simulations: 50
+  c_puct: 1.5
+  temperature: 1.0
+
+# GRPO Specific Settings
+grpo:
+  group_size: 16      # G in GRPO paper (outcomes sampled per state)
+  epsilon: 0.2        # Clipping parameter
+  beta_kl: 0.01       # KL penalty coefficient
+  entropy_coef: 0.01  # Entropy bonus

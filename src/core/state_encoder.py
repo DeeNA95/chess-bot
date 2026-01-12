@@ -24,8 +24,9 @@ class StateEncoder:
         self.planes_per_step = 12
         # History (96) + Metadata (8) + Attacks (12 - Unused/Zeros) = 116
         self.num_planes = (self.history_len * self.planes_per_step) + 8 + 12
+        self.planes_per_step = 12
         self.shape = (self.num_planes, 8, 8)
-        self.device = device
+        self.device = str(device)
 
 
     def encode_node(self, node) -> torch.Tensor:
@@ -149,4 +150,19 @@ class StateEncoder:
                 r, c = 7 - r, 7 - c
             state[plane_idx, r, c] = 1.0
             bitboard &= bitboard - 1
+
+    def get_action_mask(self, board: chess.Board) -> torch.Tensor:
+        """
+        Computes the action mask for a given board state.
+        Returns a boolean tensor of shape (4096,).
+        """
+        mask = torch.zeros(4096, dtype=torch.bool, device=self.device)
+        valid_indices = [
+            move.from_square * 64 + move.to_square
+            for move in board.legal_moves
+            if not move.promotion or move.promotion == chess.QUEEN
+        ]
+        if valid_indices:
+            mask[valid_indices] = True
+        return mask
 

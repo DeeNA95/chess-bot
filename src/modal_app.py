@@ -15,9 +15,11 @@ image = (
         'wandb',
         'verifiers',
         'fastapi',
-        'uvicorn'
+        'uvicorn',
+        'pyyaml'
     )
     .add_local_dir('src', remote_path='/root/src')
+    .add_local_file('config.yaml', remote_path='/root/config.yaml')
 )
 
 volume = modal.Volume.from_name('chess-rl-checkpoints', create_if_missing=True)
@@ -31,25 +33,14 @@ volume = modal.Volume.from_name('chess-rl-checkpoints', create_if_missing=True)
     volumes={'/checkpoints': volume},
     secrets=[modal.Secret.from_name('wandb-secret')]
 )
-def train_function(
-    total_games: int = 10,
-    num_simulations: int = 50,
-    num_parallel_games: int = 32,
-    games_per_update: int = 64,
-):
-    """MCTS Self-Play Training - the main training entry point."""
+def train_function(config_path: str = '/root/config.yaml'):
+    """Algorithm-agnostic Training - the main training entry point."""
     sys.path.append('/root')
 
     from src.training.trainer import train_loop
 
-    print('Starting MCTS Self-Play Training on Modal GPU...')
-    train_loop(
-        total_games=total_games,
-        checkpoint_dir='/checkpoints',
-        num_simulations=num_simulations,
-        num_parallel_games=num_parallel_games,
-        games_per_update=games_per_update,
-    )
+    print(f'Starting Training on Modal GPU with config: {config_path}...')
+    train_loop(config_path=config_path)
 
 
 @app.function(image=image, gpu='t4', cpu=8.0)
