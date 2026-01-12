@@ -1,5 +1,13 @@
-# Algorithm Selection: 'mcts', 'grpo', or 'ppo'
-algorithm: "ppo"
+# Algorithm Selection: 'mcts', 'grpo', 'ppo', 'ppo_mcts'
+algorithm: "ppo_mcts"
+
+# Reward Settings
+rewards:
+  stockfish_path: "/opt/homebrew/bin/stockfish"
+  stockfish_depth: 8
+  stockfish_weight: 0.8
+  material_weight: 0.1
+  outcome_weight: 0.1
 
 # General Training Settings
 training:
