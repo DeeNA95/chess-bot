@@ -55,6 +55,9 @@ class PPO:
 
         # 2. Policy Loss (Clipped Surrogate)
         ratio = torch.exp(new_log_probs - old_log_probs)
+        # Safety clamp to prevent infinite ratios if old_log_prob is very small
+        ratio = torch.clamp(ratio, 0.0, 100.0)
+
         surr1 = ratio * advantages
         surr2 = torch.clamp(ratio, 1 - self.config.clip_ratio, 1 + self.config.clip_ratio) * advantages
 

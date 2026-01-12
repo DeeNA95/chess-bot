@@ -7,13 +7,15 @@ from typing import List, Optional
 # Global worker state
 _worker_engine = None
 _worker_depth = 5
+_worker_hash = 16
 
-def _init_worker(stockfish_path: str, depth: int):
-    global _worker_engine, _worker_depth
+def _init_worker(stockfish_path: str, depth: int, hash_size: int = 16):
+    global _worker_engine, _worker_depth, _worker_hash
     _worker_depth = depth
+    _worker_hash = hash_size
     try:
         _worker_engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
-        _worker_engine.configure({"Threads": 1, "Hash": 16})
+        _worker_engine.configure({"Threads": 1, "Hash": _worker_hash})
     except Exception as e:
         print(f"Worker failed to start Stockfish: {e}")
         _worker_engine = None
@@ -65,11 +67,11 @@ class AsyncStockfishVerifier:
     """
     Manages a pool of Stockfish processes for parallel/batch verification.
     """
-    def __init__(self, stockfish_path: str, num_workers: int = 8, depth: int = 5):
+    def __init__(self, stockfish_path: str, num_workers: int = 8, depth: int = 5, hash_size: int = 16):
         self.executor = concurrent.futures.ProcessPoolExecutor(
             max_workers=num_workers,
             initializer=_init_worker,
-            initargs=(stockfish_path, depth)
+            initargs=(stockfish_path, depth, hash_size)
         )
         self.num_workers = num_workers
 

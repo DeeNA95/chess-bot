@@ -23,6 +23,8 @@ class RewardSettings:
     material_weight: float = 0.1
     outcome_weight: float = 0.1
     stockfish_depth: int = 8
+    stockfish_hash: int = 64
+    num_workers: int = 4
 
 @dataclass
 class PPOSettings:
@@ -46,7 +48,7 @@ class TrainingSettings:
 
 @dataclass
 class AppConfig:
-    algorithm: Literal["mcts", "grpo", "ppo", "ppo_mcts"] = "mcts"
+    algorithm: Literal["mcts", "grpo", "ppo", "ppo_mcts", "grpo_mcts"] = "mcts"
     training: TrainingSettings = field(default_factory=TrainingSettings)
     mcts: MCTSSettings = field(default_factory=MCTSSettings)
     grpo: GRPOSettings = field(default_factory=GRPOSettings)
