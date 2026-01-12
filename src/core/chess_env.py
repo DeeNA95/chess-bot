@@ -98,18 +98,8 @@ class ChessEnv(gym.Env):
         # Get canonical encoding (Torch Tensor)
         obs_tensor = self.encoder.encode(self.board)
 
-        # Get action mask (Torch Tensor) - optimized with bulk indexing
-        mask = torch.zeros(4096, dtype=torch.bool, device=self.device)
-
-        # Collect all valid move indices at once
-        valid_indices = [
-            move.from_square * 64 + move.to_square
-            for move in self.board.legal_moves
-            if not move.promotion or move.promotion == chess.QUEEN
-        ]
-
-        if valid_indices:
-            mask[valid_indices] = True
+        # Get action mask (Torch Tensor) from encoder
+        mask = self.encoder.get_action_mask(self.board)
 
         return {
             "observation": obs_tensor,

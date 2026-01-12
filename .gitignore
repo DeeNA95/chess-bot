@@ -1,2 +1,7 @@
 .venv
 __pycache__
+checkpoints
+test_checkpoints
+test_mcts_checkpoints
+wandb
+
