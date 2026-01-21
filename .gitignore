@@ -4,4 +4,5 @@ checkpoints
 test_checkpoints
 test_mcts_checkpoints
 wandb
-
+*.so
+*.o

@@ -11,7 +11,13 @@ from collections import deque
 
 from src.core.state_encoder import StateEncoder
 from src.agents.ppo_agent import ChessAgent
-from src.search.mcts import MCTS
+# Try to import C++ MCTS for performance, fallback to Python
+try:
+    from src.search.mcts_cpp import MCTS
+    print("🚀 Using High-Performance C++ MCTS")
+except ImportError as e:
+    print(f"⚠️  C++ MCTS not found ({e}), falling back to Python MCTS")
+    from src.search.mcts import MCTS
 from src.rl.grpo import GRPO
 from src.rl.ppo import PPO
 from src.core.config import AppConfig
@@ -631,8 +637,8 @@ def train_step_ppo(ppo_node, optimizer, scaler, samples: List[PPOSample], device
         )
     loss = metrics["loss"]
 
-    if torch.isnan(loss):
-        logger.error(f"NaN Loss detected! Policy Loss: {metrics['policy_loss']}, Value Loss: {metrics['value_loss']}")
+    if torch.isnan(loss) or torch.isinf(loss):
+        logger.error(f"NaN/Inf Loss detected! Policy Loss: {metrics['policy_loss']}, Value Loss: {metrics['value_loss']}, Entropy: {metrics.get('entropy')}")
         logger.error(f"Advantages: min={advantages.min()}, max={advantages.max()}, mean={advantages.mean()}")
         logger.error(f"Returns: min={returns.min()}, max={returns.max()}")
         return metrics

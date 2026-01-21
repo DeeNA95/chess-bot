@@ -19,7 +19,7 @@ training:
   lr: 0.0001
   checkpoint_dir: "/checkpoints"
   buffer_capacity: 100000
-  num_parallel_games: 32  # Reduced to prevent CPU choking.
+  num_parallel_games: 256  # Increased to saturate GPU (L4 can handle this easily)
   device: "cuda"  # 'cpu', 'cuda', 'mps' (auto-detected if cleaner)
 
 # MCTS Specific Settings

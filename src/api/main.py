@@ -6,7 +6,14 @@ import os
 import numpy as np
 from src.agents.ppo_agent import ChessAgent
 from src.core.state_encoder import StateEncoder
-from src.search.mcts import MCTS
+
+# Try Importing C++ MCTS
+try:
+    from src.search.mcts_cpp import MCTS
+    print("🚀 API using High-Performance C++ MCTS")
+except ImportError:
+    from src.search.mcts import MCTS
+    print("⚠️ API using Slow Python MCTS (C++ extension not found)")
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -28,7 +35,7 @@ device = "cpu"
 
 class MoveRequest(BaseModel):
     fen: str
-    num_simulations: int = 50
+    num_simulations: int = 100 # Increased default due to speedup
 
 class MoveResponse(BaseModel):
     uci: str
@@ -46,18 +53,15 @@ async def startup_event():
     encoder = StateEncoder(device=device)
 
     # Initialize MCTS with the loaded model
-    # Note: num_simulations can be overridden per request if we instantiate per request,
-    # or we just use a default here. For now, we'll instantiate MCTS here as a base
-    # but the search method uses the class params.
-    # Actually MCTS class stores num_simulations.
-    # To allow per-request param, we might need to instantiate MCTS per request
-    # or modify MCTS to accept `sims` in `search_batch`.
-    # For efficiency, we will instantiate a global MCTS with a default,
-    # and re-instantiate if needed or just accept the request param in the handler.
-    mcts = MCTS(model=agent.model, encoder=encoder, device=device, num_simulations=50)
+    mcts = MCTS(model=agent.model, encoder=encoder, device=device, num_simulations=100)
 
     # Load checkpoint
-    checkpoint_path = "checkpoints/mcts_game_15712.pt"
+    # Checkpoint is expected in root (via scp) or checkpoints dir
+    # Priority: root > checkpoints
+    checkpoint_path = "ppo_mcts_game_100096.pt"
+    if not os.path.exists(checkpoint_path):
+         checkpoint_path = "checkpoints/ppo_mcts_game_9216.pt"
+
     if os.path.exists(checkpoint_path):
         agent.load(checkpoint_path)
         print(f"Model loaded from {checkpoint_path}")
