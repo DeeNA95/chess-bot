@@ -1,20 +1,30 @@
-# Algorithm Selection: 'mcts', 'grpo', or 'ppo'
-algorithm: "ppo"
+# Algorithm Selection: 'mcts', 'grpo', 'ppo', 'ppo_mcts', "grpo_mcts"
+algorithm: "ppo_mcts"
+
+# Reward Settings
+rewards:
+  stockfish_path: "/opt/homebrew/bin/stockfish"
+  stockfish_depth: 6
+  stockfish_hash: 64
+  num_workers: 6  # Optimized for 8 vCPU machine (leave 2 vCPU for OS/Training)
+  stockfish_weight: 0.8
+  material_weight: 0.1
+  outcome_weight: 0.1
 
 # General Training Settings
 training:
-  total_games: 10000
-  batch_size: 256
-  games_per_update: 32
+  total_games: 100000
+  batch_size: 1024
+  games_per_update: 256
   lr: 0.0001
   checkpoint_dir: "/checkpoints"
   buffer_capacity: 100000
-  num_parallel_games: 16
+  num_parallel_games: 256  # Increased to saturate GPU (L4 can handle this easily)
   device: "cuda"  # 'cpu', 'cuda', 'mps' (auto-detected if cleaner)
 
 # MCTS Specific Settings
 mcts:
-  num_simulations: 50
+  num_simulations: 25
   c_puct: 1.5
   temperature: 1.0
 

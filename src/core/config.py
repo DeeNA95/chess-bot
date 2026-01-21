@@ -17,6 +17,16 @@ class GRPOSettings:
     entropy_coef: float = 0.01
 
 @dataclass
+class RewardSettings:
+    stockfish_path: str = "/opt/homebrew/bin/stockfish"
+    stockfish_weight: float = 0.8
+    material_weight: float = 0.1
+    outcome_weight: float = 0.1
+    stockfish_depth: int = 8
+    stockfish_hash: int = 64
+    num_workers: int = 4
+
+@dataclass
 class PPOSettings:
     clip_ratio: float = 0.2
     value_coef: float = 0.5
@@ -38,11 +48,12 @@ class TrainingSettings:
 
 @dataclass
 class AppConfig:
-    algorithm: Literal["mcts", "grpo", "ppo"] = "mcts"
+    algorithm: Literal["mcts", "grpo", "ppo", "ppo_mcts", "grpo_mcts"] = "mcts"
     training: TrainingSettings = field(default_factory=TrainingSettings)
     mcts: MCTSSettings = field(default_factory=MCTSSettings)
     grpo: GRPOSettings = field(default_factory=GRPOSettings)
     ppo: PPOSettings = field(default_factory=PPOSettings)
+    rewards: RewardSettings = field(default_factory=RewardSettings)
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> "AppConfig":
@@ -70,6 +81,9 @@ class AppConfig:
 
         if "ppo" in data:
             _update_from_dict(config.ppo, data["ppo"])
+
+        if "rewards" in data:
+            _update_from_dict(config.rewards, data["rewards"])
 
         return config
 
