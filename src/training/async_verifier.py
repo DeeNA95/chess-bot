@@ -68,8 +68,11 @@ class AsyncStockfishVerifier:
     Manages a pool of Stockfish processes for parallel/batch verification.
     """
     def __init__(self, stockfish_path: str, num_workers: int = 8, depth: int = 5, hash_size: int = 16):
+        import multiprocessing as mp
+        ctx = mp.get_context('spawn')
         self.executor = concurrent.futures.ProcessPoolExecutor(
             max_workers=num_workers,
+            mp_context=ctx,
             initializer=_init_worker,
             initargs=(stockfish_path, depth, hash_size)
         )

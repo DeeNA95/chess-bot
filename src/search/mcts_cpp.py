@@ -1,8 +1,9 @@
 import torch
 import numpy as np
 import chess
-from typing import List, Tuple, Optional
-from src import mcts_cpp
+import chess.engine
+from typing import List, Tuple, Optional, Any
+import mcts_cpp
 from src.core.config import AppConfig
 
 class MCTS:
@@ -17,6 +18,8 @@ class MCTS:
         num_simulations: int = 50,
         c_puct: float = 1.5,
         temperature: float = 1.0,
+        stockfish_path: Optional[str] = None,  # Direct Stockfish for tree search
+        stockfish_depth: int = 3,
     ):
         self.model = model
         self.encoder = encoder
@@ -28,12 +31,50 @@ class MCTS:
         # Cache for C++ trees: map active game index (or just parallel slot) to C++ object
         self.trees: List[Optional[mcts_cpp.MCTS]] = []
 
-    def search_batch(self, boards: List[chess.Board]) -> List[Tuple[torch.Tensor, float]]:
+        # Optional: Direct synchronous Stockfish for tree search (no multiprocessing)
+        self._stockfish_engine = None
+        self._stockfish_depth = stockfish_depth
+        if stockfish_path:
+            try:
+                self._stockfish_engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+                self._stockfish_engine.configure({'Threads': 1, 'Hash': 16})
+                print(f'🔧 MCTS: Direct Stockfish engine initialized from {stockfish_path}')
+            except Exception as e:
+                print(f'⚠️ MCTS: Failed to init Stockfish: {e}')
+                self._stockfish_engine = None
+
+    def _evaluate_fens_sync(self, fens: List[str]) -> List[float]:
+        """Synchronously evaluate FENs with internal Stockfish engine."""
+        results = []
+        for fen in fens:
+            try:
+                board = chess.Board(fen)
+                info = self._stockfish_engine.analyse(board, chess.engine.Limit(depth=self._stockfish_depth))
+                score_obj = info.get('score')
+                if score_obj is None:
+                    results.append(0.0)
+                    continue
+
+                relative_score = score_obj.relative
+                if relative_score.is_mate():
+                    mate_moves = relative_score.mate()
+                    score = 10000 if (mate_moves and mate_moves > 0) else -10000
+                else:
+                    val = relative_score.score()
+                    score = val if val is not None else 0
+
+                # Negate because relative_score is from opponent's perspective after move
+                results.append(float(np.tanh(-score / 100.0)))
+            except Exception as e:
+                results.append(0.0)
+        return results
+
+    def search_batch(self, boards: List[chess.Board], verifier: Optional[Any] = None) -> List[Tuple[torch.Tensor, float]]:
         """
         Run Batched MCTS using C++.
         Args:
             boards: List of current board states.
-                    Assumes the order corresponds to stable game slots.
+            verifier: Optional AsyncStockfishVerifier (or similar) for hybrid search.
         """
         batch_size = len(boards)
 
@@ -55,50 +96,104 @@ class MCTS:
             leaf_indices = []
 
             # Selection
-            # Selection
-            # FAST PATH: C++ Batch Selection
+            # 1. Batched Selection
+            # print("DEBUG: Calling select_leaf_batch...", flush=True)
             leaves = mcts_cpp.select_leaf_batch(active_trees)
+            # print(f"DEBUG: select_leaf_batch done. Got {len(leaves)} leaves.", flush=True)
             if not leaves:
                 break
 
-            # leaf_indices redundant if we process all active_trees in order.
-            # active_trees[i] corresponds to leaves[i].
-            # expand_batch_fast expects leaves and policy in same order.
-            # So policy_probs[i] (from model on leaves[i]) matches leaves[i].
-            # We don't need leaf_indices anymore for backprop because we batch backprop too.
-            # And we don't need to rebuild leaves list manually.
+            # 2. Categorize Leaves
+            # We have two types of work:
+            # A. Expansion (NN) - for unexpanded nodes
+            # B. Verification (Stockfish) - for Depth 1 override OR High-Visit hijack
 
-            if not leaves:
-                break
+            expand_indices = []
+            verify_indices = []
 
-            # Expansion (Batch Inference)
-            # Use C++ Encoder (returns numpy array [B, 116, 8, 8])
-            encoded_states = mcts_cpp.encode_batch(leaves)
-            obs_tensor = torch.from_numpy(encoded_states).to(self.device).float()
+            for i, leaf in enumerate(leaves):
+                if leaf.is_expanded:
+                    # Hijacked node (High Visit Count) -> Needs Verification
+                    if verifier:
+                        verify_indices.append(i)
+                else:
+                    # Unexpanded Leaf -> Needs Expansion (NN)
+                    expand_indices.append(i)
+                    # If Depth 1 (Root Child) and we have verifier, we ALSO need Verification
+                    if leaf.depth == 1 and verifier:
+                        verify_indices.append(i)
 
-            with torch.no_grad():
-                logits, values = self.model(obs_tensor)
+            # 3. Validation / Backfill values
+            stockfish_values = {} # Map leaf_index -> value
 
-            # Backprop
-            policy_probs = torch.softmax(logits, dim=1).cpu().numpy()
-            values_np = values.cpu().numpy().flatten()
+            # Use internal Stockfish engine if available, else use passed verifier
+            use_internal_sf = self._stockfish_engine is not None
+            use_verifier = verifier is not None and not use_internal_sf
 
-            # FAST PATH: C++ Batch Expansion
-            # We pass the full arrays. C++ slices them based on leaf index.
-            # leaves list corresponds 1:1 to rows in policy_probs/values_np?
-            # Yes, 'leaves' list was built from 'active_trees'.
-            # 'leaf_indices' maps leaf[j] -> tree index.
-            # Wait, 'leaves' in expansion corresponds to the batch we just forwarded.
-            # So policy_probs[j] corresponds to leaves[j].
-            # C++ expand_batch takes (leaves, policy, values).
-            # It assumes policy[i] corresponds to leaves[i].
+            if verify_indices and (use_internal_sf or use_verifier):
+                # Collect FENs
+                fens = []
+                for idx in verify_indices:
+                    tree = active_trees[idx]
+                    leaf = leaves[idx]
+                    fens.append(tree.get_fen(leaf))
 
-            # Cast leaves to list of Node* (already are)
-            # Ensure types for pybind
-            policy_probs = np.ascontiguousarray(policy_probs, dtype=np.float32)
-            values_np = np.ascontiguousarray(values_np, dtype=np.float32)
+                # Evaluate with Stockfish
+                if use_internal_sf:
+                    sf_results = self._evaluate_fens_sync(fens)
+                else:
+                    sf_results = verifier.verify_batch(fens)
 
-            mcts_cpp.expand_batch_fast(leaves, policy_probs, values_np)
+                for idx, val in zip(verify_indices, sf_results):
+                    stockfish_values[idx] = val
+
+            # 4. Expansion (NN)
+            if expand_indices:
+                subset_leaves = [leaves[i] for i in expand_indices]
+                subset_trees = [active_trees[i] for i in expand_indices]  # Trees for pool allocation
+                # print(f"DEBUG: Encoding {len(subset_leaves)} states...", flush=True)
+                encoded_states = mcts_cpp.encode_batch(subset_leaves)
+                # print(f"DEBUG: Encoding done. Shape: {encoded_states.shape}", flush=True)
+                obs_tensor = torch.from_numpy(encoded_states).to(self.device).float()
+
+                with torch.no_grad():
+                    # print("DEBUG: Run Model Forward...", flush=True)
+                    logits, values = self.model(obs_tensor)
+                    # print("DEBUG: Model Forward done.", flush=True)
+
+                policy_probs = torch.softmax(logits, dim=1).cpu().numpy()
+                values_np = values.cpu().numpy().flatten()
+
+                policy_probs = np.ascontiguousarray(policy_probs, dtype=np.float32)
+                values_np = np.ascontiguousarray(values_np, dtype=np.float32)
+
+                # Patch values with Stockfish if available
+                patch_indices = []
+                patch_values = []
+
+                # We need to construct the arrays expected by expand_batch_fast
+                # But expand_batch_fast takes the subset arrays.
+                # iterate over subset
+                for k, leaf_idx in enumerate(expand_indices):
+                    if leaf_idx in stockfish_values:
+                        values_np[k] = stockfish_values[leaf_idx]
+
+                mcts_cpp.expand_batch_fast(subset_trees, subset_leaves, policy_probs, values_np)
+                # print("DEBUG: expand_batch_fast done.", flush=True)
+
+            # 5. Pure Updates (High Visit Hijacks)
+            # These are nodes that were ALREADY expanded, but we just got a new value for them.
+            # We do NOT request expansion. We just update.
+            # However verify_indices includes depth 1 leaves too. We filtered those out in step 4 check?
+            # No, we handled them in step 4 by patching.
+            # We typically only 'update' nodes that represent pure hijacks (is_expanded=True).
+
+            for idx in verify_indices:
+                leaf = leaves[idx]
+                if leaf.is_expanded and idx not in expand_indices:
+                     # This is a pure update (High Visit Hijack)
+                     if idx in stockfish_values:
+                         active_trees[idx].update_value(leaf, stockfish_values[idx])
 
         # 3. Extract Results
         results = []

@@ -1,15 +1,19 @@
 #include <vector>
+#include <deque>
 #include <cmath>
-#include <memory>
-#include <unordered_map>
 #include <algorithm>
 #include <iostream>
-#include <random>
+#include <cstdlib>
+#include <mutex>
 
 #include "chess.hpp"
 
 namespace mcts {
 
+// ============================================================================
+// Node - MCTS tree node (uses raw pointers, pool owns memory)
+// Defined FIRST so that NodePool can use std::deque<Node>
+// ============================================================================
 struct Node {
     chess::Board board;
     Node* parent = nullptr;
@@ -20,12 +24,24 @@ struct Node {
     float prior = 0.0f;
     bool is_expanded = false;
 
-    std::vector<std::unique_ptr<Node>> children;
+    // Hybrid search fields
+    int depth = 0;
+    bool verified = false;
+    uint32_t magic = 0x12345678;
 
-    Node(const chess::Board& b, Node* p, chess::Move m, float pr)
-        : board(b), parent(p), move(m), prior(pr) {
-            children.reserve(32); // Pre-allocate for typical branching factor
-        }
+    // Children are raw pointers - NodePool owns the memory
+    std::vector<Node*> children;
+
+    Node() = default;
+
+    Node(const chess::Board& b, Node* p, chess::Move m, float pr, int d)
+        : board(b), parent(p), move(m), prior(pr), depth(d) {
+        children.reserve(35);  // Avg legal moves in chess
+    }
+
+    // Allow move operations
+    Node(Node&&) = default;
+    Node& operator=(Node&&) = default;
 
     // Disable copying
     Node(const Node&) = delete;
@@ -36,41 +52,106 @@ struct Node {
     }
 
     float ucb_score(float c_puct, int parent_visits) const {
-        if (visit_count == 0) return 10000000.0f; // Infinity
+        if (visit_count == 0) return 10000000.0f;
         float q_val = value();
         float u_val = c_puct * prior * std::sqrt((float)parent_visits) / (1.0f + visit_count);
         return q_val + u_val;
     }
 };
 
+// ============================================================================
+// NodePool - Thread-safe arena using std::deque for pointer stability
+// std::deque guarantees that pointers/references remain valid when elements
+// are added (unlike std::vector which may reallocate and invalidate all pointers)
+// ============================================================================
+class NodePool {
+public:
+    static constexpr size_t DEFAULT_CAPACITY = 100000;
+
+    explicit NodePool(size_t capacity = DEFAULT_CAPACITY) : capacity_(capacity) {}
+
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        nodes_.clear();
+    }
+
+    // Thread-safe allocation of a new node from the pool
+    Node* allocate(const chess::Board& b, Node* parent, chess::Move m, float pr, int d) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        nodes_.emplace_back(b, parent, m, pr, d);
+        return &nodes_.back();
+    }
+
+    size_t size() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return nodes_.size();
+    }
+
+    size_t capacity() const { return capacity_; }
+
+private:
+    std::deque<Node> nodes_;  // deque: pointer-stable on growth
+    mutable std::mutex mutex_;
+    size_t capacity_;
+};
+
+// ============================================================================
+// MCTS - Monte Carlo Tree Search with NodePool
+// ============================================================================
 class MCTS {
 public:
     MCTS(float c_puct, int num_simulations)
-        : c_puct_(c_puct), num_simulations_(num_simulations) {}
+        : c_puct_(c_puct), num_simulations_(num_simulations), pool_(NodePool::DEFAULT_CAPACITY) {}
 
     void reset(const std::string& fen) {
-        root_ = std::make_unique<Node>(chess::Board(fen), nullptr, chess::Move::NULL_MOVE, 0.0f);
+        pool_.clear();
+        root_ = pool_.allocate(chess::Board(fen), nullptr, chess::Move::NULL_MOVE, 0.0f, 0);
     }
 
     Node* select_leaf() {
-        Node* node = root_.get();
+        Node* node = root_;
+        if (!node) {
+            std::cerr << "FATAL: Root is null in select_leaf" << std::endl;
+            std::abort();
+        }
+        if (node->magic != 0x12345678) {
+            std::cerr << "FATAL: Root corrupted in select_leaf" << std::endl;
+            std::abort();
+        }
+
         while (node->is_expanded && !node->children.empty()) {
+            if (node->magic != 0x12345678) {
+                std::cerr << "FATAL: Node corrupted during traversal" << std::endl;
+                std::abort();
+            }
+
+            // Check for hijack: Re-verify at 5 visits
+            if (node->depth > 0 && node->visit_count >= 5 && !node->verified) {
+                return node;
+            }
+
             Node* best_child = nullptr;
             float best_score = -1e9;
 
-            for (const auto& child : node->children) {
+            for (Node* child : node->children) {
+                if (!child || child->magic != 0x12345678) {
+                    std::cerr << "FATAL: Child corrupted during selection" << std::endl;
+                    continue;
+                }
                 float score = child->ucb_score(c_puct_, node->visit_count);
                 if (score > best_score) {
                     best_score = score;
-                    best_child = child.get();
+                    best_child = child;
                 }
+            }
+            if (!best_child) {
+                return node;
             }
             node = best_child;
         }
         return node;
     }
 
-    // New optimized batch selection
     static void select_leaf_batch(
         std::vector<MCTS*>& trees,
         std::vector<Node*>& out_leaves
@@ -78,15 +159,17 @@ public:
         int batch_size = trees.size();
         out_leaves.resize(batch_size);
 
-        #pragma omp parallel for if(batch_size > 16)
-        for(int i=0; i<batch_size; ++i) {
+        // Sequential loop (OpenMP removed for stability with Python multiprocessing)
+        for (int i = 0; i < batch_size; ++i) {
             out_leaves[i] = trees[i]->select_leaf();
         }
     }
 
-    // Called by Python after NN inference
-    // policy_probs: dense vector of 4096 floats.
     void expand(Node* node, const std::vector<float>& policy_probs, float value) {
+        if (!node || node->magic != 0x12345678) {
+            std::cerr << "FATAL: Expand called on corrupted node" << std::endl;
+            return;
+        }
         if (node->is_expanded) return;
 
         chess::Board& board = node->board;
@@ -103,46 +186,52 @@ public:
                 prior = policy_probs[action_idx];
             }
 
-            // Create child
             chess::Board child_board = board;
             child_board.makeMove(move);
 
-            node->children.push_back(std::make_unique<Node>(
-                child_board, node, move, prior
-            ));
+            Node* child = pool_.allocate(child_board, node, move, prior, node->depth + 1);
+            node->children.push_back(child);
         }
 
         node->is_expanded = true;
         backpropagate(node, value);
     }
 
-    // New optimized batch expand to avoid Python loop
+    void update_value(Node* node, float value) {
+        if (!node || node->magic != 0x12345678) {
+            std::cerr << "FATAL: update_value corrupted" << std::endl;
+            return;
+        }
+        node->verified = true;
+        backpropagate(node, value);
+    }
+
+    // Static expand_batch needs access to pool - we pass MCTS pointers
     static void expand_batch(
+        std::vector<MCTS*>& trees,
         const std::vector<Node*>& leaves,
-        const float* policy_data, // Flat array [batch, 4096]
-        const float* values,      // Flat array [batch]
+        const float* policy_data,
+        const float* values,
         int batch_size
     ) {
-        // Parallelize? It's O(batch_size * legal_moves).
-        // 256 games. Fast enough single thread, but omp helps.
-        #pragma omp parallel for if(batch_size > 16)
-        for(int i=0; i<batch_size; ++i) {
+        if (batch_size <= 0) return;
+
+        // Sequential loop (OpenMP removed for stability with Python multiprocessing)
+        for (int i = 0; i < batch_size; ++i) {
             Node* leaf = leaves[i];
             float val = values[i];
-
-            // Pointer to this leaf's policy section
-            // policy_data is [batch_idx * 4096 + action_idx]
-            // We need to know which policy row corresponds to this leaf?
-            // "leaves" corresponds to "values" and "policy_data" index-wise.
             const float* leaf_policy = policy_data + (i * 4096);
+            MCTS* tree = trees[i];
 
             if (leaf && !leaf->is_expanded) {
+                if (leaf->magic != 0x12345678) {
+                    std::cerr << "FATAL: expand_batch encountered corrupted leaf at index " << i << std::endl;
+                    continue;
+                }
+
                 chess::Board& board = leaf->board;
                 chess::Movelist moves;
                 chess::movegen::legalmoves(moves, board);
-
-                // Reserve memory if possible?
-                // leaf->children.reserve(moves.size());
 
                 for (const auto& move : moves) {
                     int from = move.from().index();
@@ -154,27 +243,21 @@ public:
                         prior = leaf_policy[action_idx];
                     }
 
-                    // Create child
                     chess::Board child_board = board;
                     child_board.makeMove(move);
 
-                    // Add child (thread safe? No, leaf is distinct per thread i)
-                    leaf->children.push_back(std::make_unique<Node>(
-                        child_board, leaf, move, prior
-                    ));
+                    Node* child = tree->pool_.allocate(child_board, leaf, move, prior, leaf->depth + 1);
+                    leaf->children.push_back(child);
                 }
                 leaf->is_expanded = true;
 
-                // Backprop (thread safe? NO if multiple leaves share parents/root?)
-                // BUT: In batched MCTS, each game is a separate tree.
-                // leaves[i] belongs to tree[i].
-                // So concurrent backprops are disjoint. Safe.
-                // UNLESS we are sharing trees?
-                // Currently mcts_cpp.py maintains separate MCTS objects.
-                // So disjoint parents. Safe.
-
+                // Backpropagate
                 Node* node = leaf;
                 while (node != nullptr) {
+                    if (node->magic != 0x12345678) {
+                        std::cerr << "FATAL: expand_batch backprop encountered corrupted node" << std::endl;
+                        break;
+                    }
                     node->visit_count++;
                     node->value_sum += val;
                     val = -val;
@@ -186,32 +269,52 @@ public:
 
     void backpropagate(Node* node, float value) {
         while (node != nullptr) {
+            if (node->magic != 0x12345678) {
+                std::cerr << "FATAL: backpropagate encountered corrupted node" << std::endl;
+                break;
+            }
             node->visit_count++;
             node->value_sum += value;
-            value = -value; // Flip perspective
+            value = -value;
             node = node->parent;
         }
     }
 
     std::string get_fen(Node* node) {
+        if (!node || node->magic != 0x12345678) {
+            std::cerr << "FATAL: get_fen called on corrupted node" << std::endl;
+            return "";
+        }
         return node->board.getFen();
     }
 
     int game_status(Node* node) {
-         chess::Movelist moves;
-         chess::movegen::legalmoves(moves, node->board);
-         if (moves.empty()) {
-             if (node->board.inCheck()) return 1; // Checkmate
-             return 2; // Stalemate
-         }
-         return 0; // Active
+        if (!node || node->magic != 0x12345678) {
+            std::cerr << "FATAL: game_status called on corrupted node" << std::endl;
+            return 0;
+        }
+        chess::Movelist moves;
+        chess::movegen::legalmoves(moves, node->board);
+        if (moves.empty()) {
+            if (node->board.inCheck()) return 1;
+            return 2;
+        }
+        return 0;
     }
 
     std::vector<std::pair<int, int>> get_root_counts() {
         std::vector<std::pair<int, int>> counts;
         if (!root_) return counts;
+        if (root_->magic != 0x12345678) {
+            std::cerr << "FATAL: get_root_counts root corrupted" << std::endl;
+            return counts;
+        }
 
-        for (const auto& child : root_->children) {
+        for (Node* child : root_->children) {
+            if (!child || child->magic != 0x12345678) {
+                std::cerr << "FATAL: get_root_counts child corrupted" << std::endl;
+                continue;
+            }
             int from = child->move.from().index();
             int to = child->move.to().index();
             int idx = from * 64 + to;
@@ -226,54 +329,71 @@ public:
 
     int get_root_visits() { return root_ ? root_->visit_count : 0; }
 
+    // Expose pool for static expand_batch
+    NodePool& pool() { return pool_; }
+
 private:
-    std::unique_ptr<Node> root_;
+    Node* root_ = nullptr;  // Raw pointer, pool owns the memory
     float c_puct_;
     int num_simulations_;
+    NodePool pool_;
 };
 
-inline void fill_plane(float* encoded_data, int batch_idx, int plane_idx, uint64_t bb, int perspective) {
+// ============================================================================
+// Encoding functions (unchanged)
+// ============================================================================
+inline void fill_plane(float* encoded_data, int batch_idx, int plane_idx, uint64_t bb, int perspective, int max_idx) {
     while (bb) {
         int sq = __builtin_ctzll(bb);
         int r = sq / 8;
         int c = sq % 8;
 
-        if (perspective == 1) { // Black
+        if (perspective == 1) {
             r = 7 - r;
             c = 7 - c;
         }
 
-        // Shape: [Batch, 116, 8, 8] -> Flat index
         int idx = batch_idx * (116 * 64) + plane_idx * 64 + r * 8 + c;
-        encoded_data[idx] = 1.0f;
+        if (idx >= 0 && idx < max_idx) {
+            encoded_data[idx] = 1.0f;
+        }
 
         bb &= bb - 1;
     }
 }
 
-void encode_single_node(Node* node, float* data, int batch_idx) {
+void encode_single_node(Node* node, float* data, int batch_idx, int max_size) {
     if (!node) return;
+    if (node->magic != 0x12345678) {
+        std::cerr << "FATAL: Encode called on corrupted node" << std::endl;
+        return;
+    }
 
-    int perspective = (int)node->board.sideToMove(); // 0=White, 1=Black
+    if (!data) return;
 
-    // 1. History (0-95)
+    int perspective = (int)node->board.sideToMove();
+    int total_features = 116 * 64;
+
+    // 1. History
     Node* current = node;
     for (int t = 0; t < 8; ++t) {
         if (!current) break;
+        if (current->magic != 0x12345678) {
+            std::cerr << "FATAL: History traversal corrupted at depth " << t << std::endl;
+            break;
+        }
 
         int base_plane = t * 12;
         const auto& board = current->board;
 
-        // My pieces
         for (int pt = 0; pt < 6; ++pt) {
-             uint64_t bb = board.pieces(static_cast<chess::PieceType::underlying>(pt), static_cast<chess::Color::underlying>(perspective)).getBits();
-             fill_plane(data, batch_idx, base_plane + pt, bb, perspective);
+            uint64_t bb = board.pieces(static_cast<chess::PieceType::underlying>(pt), static_cast<chess::Color::underlying>(perspective)).getBits();
+            fill_plane(data, batch_idx, base_plane + pt, bb, perspective, max_size);
         }
 
-        // Enemy pieces
         for (int pt = 0; pt < 6; ++pt) {
-             uint64_t bb = board.pieces(static_cast<chess::PieceType::underlying>(pt), static_cast<chess::Color::underlying>(1 - perspective)).getBits();
-             fill_plane(data, batch_idx, base_plane + 6 + pt, bb, perspective);
+            uint64_t bb = board.pieces(static_cast<chess::PieceType::underlying>(pt), static_cast<chess::Color::underlying>(1 - perspective)).getBits();
+            fill_plane(data, batch_idx, base_plane + 6 + pt, bb, perspective, max_size);
         }
 
         current = current->parent;
@@ -283,30 +403,35 @@ void encode_single_node(Node* node, float* data, int batch_idx) {
     int meta_base = 96;
     const auto& b = node->board;
 
-    // En Passant (100)
     if (b.enpassantSq() != chess::Square::NO_SQ) {
         int sq = b.enpassantSq().index();
         int r = sq / 8;
         int c = sq % 8;
         if (perspective == 1) { r = 7 - r; c = 7 - c; }
-        int idx = batch_idx * (116 * 64) + (meta_base + 4) * 64 + r * 8 + c;
-        data[idx] = 1.0f;
+        int idx = batch_idx * total_features + (meta_base + 4) * 64 + r * 8 + c;
+        if (idx >= 0 && idx < max_size) data[idx] = 1.0f;
     }
 
-    // Halfmove (101)
     float halfmove = std::min(b.halfMoveClock() / 50.0f, 1.0f);
     int p_idx = meta_base + 5;
-    for(int i=0; i<64; ++i) data[batch_idx*(116*64) + p_idx*64 + i] = halfmove;
+    for (int i = 0; i < 64; ++i) {
+        int idx = batch_idx * total_features + p_idx * 64 + i;
+        if (idx < max_size) data[idx] = halfmove;
+    }
 
-    // Fullmove (102)
     float fullmove = std::min(b.fullMoveNumber() / 200.0f, 1.0f);
     p_idx = meta_base + 6;
-    for(int i=0; i<64; ++i) data[batch_idx*(116*64) + p_idx*64 + i] = fullmove;
+    for (int i = 0; i < 64; ++i) {
+        int idx = batch_idx * total_features + p_idx * 64 + i;
+        if (idx < max_size) data[idx] = fullmove;
+    }
 
-    // Color (103)
-    if (perspective == 1) { // Black
+    if (perspective == 1) {
         p_idx = meta_base + 7;
-        for(int i=0; i<64; ++i) data[batch_idx*(116*64) + p_idx*64 + i] = 1.0f;
+        for (int i = 0; i < 64; ++i) {
+            int idx = batch_idx * total_features + p_idx * 64 + i;
+            if (idx < max_size) data[idx] = 1.0f;
+        }
     }
 }
 

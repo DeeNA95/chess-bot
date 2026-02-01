@@ -221,7 +221,14 @@ def play_games_ppo_mcts(
         current_boards = [boards[i] for i in active_indices]
 
         # 1. Batched MCTS Search
-        search_results = mcts.search_batch(current_boards)
+        verifier = None
+        if rubric:
+            for v, _ in rubric.verifiers:
+                if isinstance(v, AsyncStockfishVerifier):
+                    verifier = v
+                    break
+
+        search_results = mcts.search_batch(current_boards, verifier=verifier)
 
         # 2. Process results and calculate rewards
         mcts_moves = []
@@ -479,7 +486,7 @@ def train_loop(config_path: str = "config.yaml"):
         rubric.add_verifier(OutcomeVerifier(), weight=config.rewards.outcome_weight)
 
     optimizer = torch.optim.Adam(agent.model.parameters(), lr=config.training.lr)
-    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
+    scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
 
     import wandb
     wandb.init(project='chess-rl-bot', config=vars(config))
@@ -688,7 +695,14 @@ def play_games_grpo_mcts(
         current_boards = [boards[i] for i in active_indices]
 
         # 1. Batched MCTS Search
-        search_results = mcts.search_batch(current_boards)
+        verifier = None
+        if rubric:
+            for v, _ in rubric.verifiers:
+                if isinstance(v, AsyncStockfishVerifier):
+                    verifier = v
+                    break
+
+        search_results = mcts.search_batch(current_boards, verifier=verifier)
 
         # 2. Generate Group Samples
         batch_boards_for_eval = [] # Size: N_active * G

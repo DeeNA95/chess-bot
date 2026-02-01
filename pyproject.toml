@@ -1,6 +1,6 @@
 [project]
 name = "chess-bot"
-version = "0.1.0"
+version = "0.1.1"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -17,9 +17,9 @@ dependencies = [
     "uvicorn>=0.40.0",
     "verifiers>=0.1.8.post2",
     "wandb>=0.23.1",
+    "PyYAML>=6.0",
 ]
 
-[dependency-groups]
-dev = [
-    "pytest>=9.0.2",
-]
+[build-system]
+requires = ["setuptools>=42", "wheel", "pybind11>=2.5.0"]
+build-backend = "setuptools.build_meta"

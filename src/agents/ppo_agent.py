@@ -13,9 +13,8 @@ class ChessAgent(ChessAgentBase):
         self.model = ChessTransformerNet(num_input_planes=116).to(device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 
-        # Mixed Precision Scaler
-        # Use torch.cuda.amp for broader compatibility
-        self.scaler = torch.cuda.amp.GradScaler() if device == 'cuda' else None
+       
+        self.scaler = torch.amp.GradScaler('cuda') if device == 'cuda' else None
 
         # LR Scheduler
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(

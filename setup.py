@@ -84,7 +84,7 @@ class BuildExt(build_ext):
 
 setup(
     name='mcts_cpp',
-    version='0.1.0',
+    version='0.1.1',
     description='C++ MCTS for Chess RL',
     ext_modules=ext_modules,
     install_requires=['pybind11>=2.5.0'],
