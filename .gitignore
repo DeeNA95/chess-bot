@@ -6,3 +6,7 @@ test_mcts_checkpoints
 wandb
 *.so
 *.o
+build/
+*.egg-info
+*.pt
+
