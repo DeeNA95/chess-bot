@@ -17,7 +17,7 @@ training:
   batch_size: 4096
   games_per_update: 4096
   lr: 0.0001
-  checkpoint_dir: "/checkpoints"
+  checkpoint_dir: "./checkpoints"
   buffer_capacity: 600000
   num_parallel_games: 512
   device: "cuda"  # 'cpu', 'cuda', 'mps' (auto-detected if cleaner)
