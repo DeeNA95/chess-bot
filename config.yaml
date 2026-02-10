@@ -5,26 +5,26 @@ algorithm: "ppo_mcts"
 rewards:
   stockfish_path: "/usr/games/stockfish"
   stockfish_depth: 10
-  stockfish_hash: 256
-  num_workers: 8
+  stockfish_hash: 512
+  num_workers: 12
   stockfish_weight: 0.7
   material_weight: 0.2
   outcome_weight: 0.1
 
 # General Training Settings
 training:
-  total_games: 50000
-  batch_size: 2048
-  games_per_update: 2048
+  total_games: 100000
+  batch_size: 4096
+  games_per_update: 4096
   lr: 0.0001
   checkpoint_dir: "/checkpoints"
-  buffer_capacity: 400000
-  num_parallel_games: 256
+  buffer_capacity: 600000
+  num_parallel_games: 512
   device: "cuda"  # 'cpu', 'cuda', 'mps' (auto-detected if cleaner)
 
 # MCTS Specific Settings
 mcts:
-  num_simulations: 800
+  num_simulations: 1200
   c_puct: 1.5
   temperature: 1.0
   dirichlet_alpha: 0.03
