@@ -4,7 +4,7 @@ import chess
 import torch
 import os
 import numpy as np
-from src.agents.ppo_agent import ChessAgent
+from src.agents.chess_agent import ChessAgent
 from src.core.state_encoder import StateEncoder
 
 # Try Importing C++ MCTS

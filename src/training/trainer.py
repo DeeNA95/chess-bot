@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from collections import deque
 
 from src.core.state_encoder import StateEncoder
-from src.agents.ppo_agent import ChessAgent
+from src.agents.chess_agent import ChessAgent
 # Try to import C++ MCTS for performance, fallback to Python
 try:
     from src.search.mcts_cpp import MCTS

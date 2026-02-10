@@ -71,7 +71,7 @@ def test_vector_self_play_env():
 def test_short_inference():
     """Run a very short inference loop to verify agent connectivity."""
     from src.core.vector_self_play_env import VectorSelfPlayEnv
-    from src.agents.ppo_agent import ChessAgent
+    from src.agents.chess_agent import ChessAgent
 
     print('Testing short inference loop...')
 

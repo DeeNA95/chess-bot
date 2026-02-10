@@ -68,7 +68,7 @@ def verify_hybrid_mcts(num_games: int = 10):
     import chess
     import torch
     from src.core.config import AppConfig
-    from src.agents.ppo_agent import ChessAgent as PPOAgent
+    from src.agents.chess_agent import ChessAgent as PPOAgent
     from src.core.state_encoder import StateEncoder
     from src.search.mcts_cpp import MCTS
     from src.training.async_verifier import AsyncStockfishVerifier
@@ -129,4 +129,3 @@ def verify_hybrid_mcts(num_games: int = 10):
 
     sv.close()
     print("🎉 Hybrid MCTS Verification Passed!")
-
