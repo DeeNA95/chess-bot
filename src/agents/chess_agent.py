@@ -1,19 +1,16 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-from src.agents.base_agent import ChessAgent as ChessAgentBase
-from src.models.transformer_net import ChessTransformerNet
+import torch.amp
+from src.models.transformer_net import ChessTransformerNetV2
 from typing import Dict, Any
+from ..utils import get_device
 
-class ChessAgent(ChessAgentBase):
-    def __init__(self, device="cpu", lr=5e-5):
-        self.device = device
+class ChessAgent:
+    def __init__(self, device="cpu", lr=5e-5, weight_decay=1e-3):
+        self.device = get_device()
         # Use new Transformer Net with 116 planes
-        self.model = ChessTransformerNet(num_input_planes=116).to(device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self.model = ChessTransformerNetV2(num_input_planes=116).to(device)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
 
-       
         self.scaler = torch.amp.GradScaler('cuda') if device == 'cuda' else None
 
         # LR Scheduler
@@ -23,9 +20,12 @@ class ChessAgent(ChessAgentBase):
 
     def predict(self, observation: Dict[str, Any], deterministic: bool = False) -> int:
         """Simple model inference without MCTS."""
+
         obs = observation['observation']
+
         if not isinstance(obs, torch.Tensor):
             obs = torch.tensor(obs, dtype=torch.float32)
+
         obs = obs.unsqueeze(0).to(self.device)
         mask = observation['action_mask'].unsqueeze(0).to(self.device)
 

@@ -1,12 +1,12 @@
 import unittest
 import torch
-from src.models.transformer_net import ChessTransformerNet
+from src.models.transformer_net import ChessTransformerNetV2
 
-class TestChessTransformerNet(unittest.TestCase):
+class TestChessTransformerNetV2(unittest.TestCase):
     def test_forward_pass(self):
         # Batch size 4, 116 planes, 8x8
         x = torch.randn(4, 116, 8, 8)
-        model = ChessTransformerNet(num_input_planes=116)
+        model = ChessTransformerNetV2(num_input_planes=116)
 
         policy, value = model(x)
 

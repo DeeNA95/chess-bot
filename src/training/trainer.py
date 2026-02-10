@@ -444,6 +444,8 @@ def train_loop(config_path: str = "config.yaml"):
             num_simulations=config.mcts.num_simulations,
             c_puct=config.mcts.c_puct,
             temperature=config.mcts.temperature,
+            dirichlet_alpha=config.mcts.dirichlet_alpha,
+            dirichlet_epsilon=config.mcts.dirichlet_epsilon,
         )
     elif config.algorithm == "grpo":
         grpo_node = GRPO(config, agent.model)
@@ -458,6 +460,8 @@ def train_loop(config_path: str = "config.yaml"):
             num_simulations=config.mcts.num_simulations,
             c_puct=config.mcts.c_puct,
             temperature=config.mcts.temperature,
+            dirichlet_alpha=config.mcts.dirichlet_alpha,
+            dirichlet_epsilon=config.mcts.dirichlet_epsilon,
         )
     elif config.algorithm == "grpo_mcts":
         grpo_node = GRPO(config, agent.model)
@@ -468,6 +472,8 @@ def train_loop(config_path: str = "config.yaml"):
             num_simulations=config.mcts.num_simulations,
             c_puct=config.mcts.c_puct,
             temperature=config.mcts.temperature,
+            dirichlet_alpha=config.mcts.dirichlet_alpha,
+            dirichlet_epsilon=config.mcts.dirichlet_epsilon,
         )
     # Rubric Setup for PPO-MCTS or GRPO-MCTS
     rubric = None

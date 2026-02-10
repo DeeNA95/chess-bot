@@ -6,7 +6,7 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(mcts_cpp, m) {
-    py::class_<mcts::Node>(m, "Node")
+    py::class_<mcts::Node, std::unique_ptr<mcts::Node, py::nodelete>>(m, "Node")
         .def_property_readonly("visit_count", [](mcts::Node& n) { return n.visit_count; })
         .def_property_readonly("value", [](mcts::Node& n) { return n.value(); })
         .def_property_readonly("depth", [](mcts::Node& n) { return n.depth; })
@@ -14,13 +14,19 @@ PYBIND11_MODULE(mcts_cpp, m) {
         .def_property_readonly("verified", [](mcts::Node& n) { return n.verified; });
 
     py::class_<mcts::MCTS>(m, "MCTS")
-        .def(py::init<float, int>(), py::arg("c_puct"), py::arg("num_simulations"))
+        .def(
+            py::init<float, int, float, float>(),
+            py::arg("c_puct"),
+            py::arg("num_simulations"),
+            py::arg("dirichlet_alpha") = 0.03f,
+            py::arg("dirichlet_epsilon") = 0.0f
+        )
         .def("reset", [](mcts::MCTS& m, const std::string& fen) {
             try { m.reset(fen); } catch (const std::exception& e) { std::cerr << "C++ Exception in reset: " << e.what() << std::endl; throw; }
         })
         .def("select_leaf", [](mcts::MCTS& m) {
             try { return m.select_leaf(); } catch (const std::exception& e) { std::cerr << "C++ Exception in select_leaf: " << e.what() << std::endl; throw; }
-        }, py::return_value_policy::reference)
+        }, py::return_value_policy::reference_internal)
         .def("expand", &mcts::MCTS::expand)
         .def("update_value", &mcts::MCTS::update_value)
         .def("get_fen", [](mcts::MCTS& m, mcts::Node* n) {
@@ -100,10 +106,14 @@ PYBIND11_MODULE(mcts_cpp, m) {
                 py::gil_scoped_release release;
                 mcts::MCTS::select_leaf_batch(trees, leaves);
             }
-            return leaves;
+            py::list out;
+            for (auto* leaf : leaves) {
+                out.append(py::cast(leaf, py::return_value_policy::reference));
+            }
+            return out;
         } catch (const std::exception& e) {
             std::cerr << "C++ Exception in select_leaf_batch: " << e.what() << std::endl;
             throw;
         }
-    }, py::return_value_policy::reference);
+    });
 }

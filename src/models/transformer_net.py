@@ -3,16 +3,19 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-class ChessTransformerNet(nn.Module):
+
+class _ChessTransformerBase(nn.Module):
     '''
-    Hybrid CNN + Transformer network for chess.
+    Shared backbone for chess transformer variants.
 
     Architecture:
     1. CNN stem extracts local features → (B, embed_dim, 8, 8)
     2. Flatten to sequence of 64 square embeddings → (B, 64, embed_dim)
-    3. Add learnable positional embeddings
+    3. Add 2D rank/file positional embeddings
     4. Transformer encoder for global attention
-    5. Dual heads: Policy (4096 logits) + Value (scalar)
+    5. Value head (scalar)
+
+    Subclasses must implement a policy head.
 
     Input: (B, num_planes, 8, 8) - canonical board representation
     Output: (policy_logits, value)
@@ -45,9 +48,12 @@ class ChessTransformerNet(nn.Module):
             nn.GELU()
         )
 
-        # Learnable positional embeddings for each of 64 squares
-        self.positional_embeddings = nn.Parameter(
-            torch.randn(1, self.num_squares, embed_dim) * 0.02
+        # 2D positional embeddings: separate rank and file
+        self.rank_embeddings = nn.Parameter(
+            torch.randn(1, 8, embed_dim) * 0.02
+        )
+        self.file_embeddings = nn.Parameter(
+            torch.randn(1, 8, embed_dim) * 0.02
         )
 
         # Transformer encoder
@@ -69,11 +75,6 @@ class ChessTransformerNet(nn.Module):
         # Layer norm before heads
         self.norm = nn.LayerNorm(embed_dim)
 
-        # Policy head: from-to attention mechanism
-        self.policy_from_proj = nn.Linear(embed_dim, embed_dim // 2)
-        self.policy_to_proj = nn.Linear(embed_dim, embed_dim // 2)
-        self.policy_head = nn.Linear(embed_dim * self.num_squares, action_space)
-
         # Value head: pooled representation → scalar
         self.value_head = nn.Sequential(
             nn.Linear(embed_dim, 256),
@@ -84,9 +85,6 @@ class ChessTransformerNet(nn.Module):
             nn.Linear(64, 1),
             nn.Tanh()  # Value in [-1, 1]
         )
-
-        # Initialize weights
-        self._init_weights()
 
     def _init_weights(self):
         for module in self.modules():
@@ -102,50 +100,48 @@ class ChessTransformerNet(nn.Module):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        '''
-        Forward pass.
-
-        Args:
-            x: (B, num_planes, 8, 8) board tensor
-
-        Returns:
-            policy_logits: (B, 4096) raw logits for from-to moves
-            value: (B, 1) estimated value of position
-        '''
-        batch_size = x.shape[0]
-
-        # CNN stem: (B, num_planes, 8, 8) → (B, embed_dim, 8, 8)
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        '''Shared stem + transformer encoding. Returns (B, 64, embed_dim).'''
         features = self.stem(x)
-
-        # Reshape to sequence: (B, embed_dim, 8, 8) → (B, 64, embed_dim)
         features = features.flatten(2).transpose(1, 2)
 
-        # Add positional embeddings
-        features = features + self.positional_embeddings
+        pos = self.rank_embeddings[:, :, None, :] + self.file_embeddings[:, None, :, :]
+        features = features + pos.reshape(1, 64, self.embed_dim)
 
-        # Transformer: (B, 64, embed_dim) → (B, 64, embed_dim)
         features = self.transformer(features)
         features = self.norm(features)
-
-        # Policy: flatten all squares and project to action space
-        policy_features = features.flatten(1)  # (B, 64 * embed_dim)
-        policy_logits = self.policy_head(policy_features)  # (B, 4096)
-
-        # Value: mean pool across squares
-        value_features = features.mean(dim=1)  # (B, embed_dim)
-        value = self.value_head(value_features)  # (B, 1)
-
-        return policy_logits, value
+        return features
 
     def count_parameters(self) -> int:
         '''Returns total number of trainable parameters.'''
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
-class ChessTransformerNetV2(ChessTransformerNet):
+class ChessTransformerNet(_ChessTransformerBase):
     '''
-    Enhanced version with from-to attention for policy head.
+    Hybrid CNN + Transformer with flat linear policy head.
+
+    Policy: flatten all 64 square embeddings → linear → 4096 logits.
+    '''
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.policy_head = nn.Linear(self.embed_dim * self.num_squares, 4096)
+        self._init_weights()
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        features = self.encode(x)
+
+        policy_logits = self.policy_head(features.flatten(1))  # (B, 4096)
+
+        value = self.value_head(features.mean(dim=1))  # (B, 1)
+
+        return policy_logits, value
+
+
+class ChessTransformerNetV2(_ChessTransformerBase):
+    '''
+    Hybrid CNN + Transformer with from-to attention policy head.
 
     Policy is computed as attention between from-squares and to-squares,
     giving more structured inductive bias for move prediction.
@@ -153,34 +149,20 @@ class ChessTransformerNetV2(ChessTransformerNet):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        # Override policy head with attention-based mechanism
-        embed_dim = self.embed_dim
-        self.from_query = nn.Linear(embed_dim, embed_dim)
-        self.to_key = nn.Linear(embed_dim, embed_dim)
-        self.policy_scale = embed_dim ** -0.5
+        self.from_query = nn.Linear(self.embed_dim, self.embed_dim)
+        self.to_key = nn.Linear(self.embed_dim, self.embed_dim)
+        self.policy_scale = self.embed_dim ** -0.5
+        self._init_weights()
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        batch_size = x.shape[0]
-
-        # CNN stem + transformer (same as parent)
-        features = self.stem(x)
-        features = features.flatten(2).transpose(1, 2)
-        features = features + self.positional_embeddings
-        features = self.transformer(features)
-        features = self.norm(features)
+        features = self.encode(x)
 
         # Policy: from-to attention
-        # Each square can be a "from" square (query) or "to" square (key)
         from_q = self.from_query(features)  # (B, 64, embed_dim)
         to_k = self.to_key(features)  # (B, 64, embed_dim)
-
-        # Compute attention scores: (B, 64, 64) → flatten to (B, 4096)
         policy_logits = torch.bmm(from_q, to_k.transpose(1, 2)) * self.policy_scale
         policy_logits = policy_logits.flatten(1)  # (B, 4096)
 
-        # Value: mean pool
-        value_features = features.mean(dim=1)
-        value = self.value_head(value_features)
+        value = self.value_head(features.mean(dim=1))  # (B, 1)
 
         return policy_logits, value

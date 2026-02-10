@@ -53,7 +53,7 @@ async def startup_event():
     encoder = StateEncoder(device=device)
 
     # Initialize MCTS with the loaded model
-    mcts = MCTS(model=agent.model, encoder=encoder, device=device, num_simulations=100)
+    mcts = MCTS(model=agent.model, encoder=encoder, device=device, num_simulations=10)
 
     # Load checkpoint
     # Checkpoint is expected in root (via scp) or checkpoints dir

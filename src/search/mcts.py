@@ -55,6 +55,8 @@ class MCTS:
         num_simulations: int = 50,
         c_puct: float = 1.5,
         temperature: float = 1.0,
+        dirichlet_alpha: float = 0.03,
+        dirichlet_epsilon: float = 0.0,
     ):
         self.model = model
         self.encoder = encoder
@@ -62,6 +64,8 @@ class MCTS:
         self.num_simulations = num_simulations
         self.c_puct = c_puct
         self.temperature = temperature
+        self.dirichlet_alpha = dirichlet_alpha
+        self.dirichlet_epsilon = dirichlet_epsilon
 
     def search_batch(self, boards: List[chess.Board]) -> List[Tuple[torch.Tensor, float]]:
         """
@@ -182,11 +186,29 @@ class MCTS:
             assert node.board is not None, "Node to expand must have a board"
             board = node.board
             probs = policy_probs[i]
+            apply_dirichlet = (
+                node.parent is None
+                and self.dirichlet_epsilon > 0.0
+                and self.dirichlet_alpha > 0.0
+            )
+
+            if apply_dirichlet:
+                legal_moves = [
+                    move for move in board.legal_moves
+                    if not move.promotion or move.promotion == chess.QUEEN
+                ]
+                if legal_moves:
+                    noise = np.random.dirichlet(
+                        [self.dirichlet_alpha] * len(legal_moves)
+                    )
+                else:
+                    noise = None
 
             # Mask illegal moves and re-normalize (optional but good for exploration)
             # Actually AlphaZero relies on the network learning legal moves,
             # but masking is safer for the tree search.
 
+            noise_idx = 0
             for move in board.legal_moves:
                 # AlphaZero standard: Queen promotion only (simplification)
                 if move.promotion and move.promotion != chess.QUEEN:
@@ -194,6 +216,10 @@ class MCTS:
 
                 action_idx = move.from_square * 64 + move.to_square
                 prior = probs[action_idx]
+                if apply_dirichlet and noise is not None:
+                    # Root-only exploration noise (AlphaZero-style).
+                    prior = (1.0 - self.dirichlet_epsilon) * prior + self.dirichlet_epsilon * noise[noise_idx]
+                    noise_idx += 1
 
                 # Create child WITHOUT copying board (Lazy)
                 child = MCTSNode(

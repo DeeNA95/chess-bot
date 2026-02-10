@@ -18,6 +18,8 @@ class MCTS:
         num_simulations: int = 50,
         c_puct: float = 1.5,
         temperature: float = 1.0,
+        dirichlet_alpha: float = 0.03,
+        dirichlet_epsilon: float = 0.0,
         stockfish_path: Optional[str] = None,  # Direct Stockfish for tree search
         stockfish_depth: int = 3,
     ):
@@ -27,6 +29,8 @@ class MCTS:
         self.num_simulations = num_simulations
         self.c_puct = c_puct
         self.temperature = temperature
+        self.dirichlet_alpha = dirichlet_alpha
+        self.dirichlet_epsilon = dirichlet_epsilon
 
         # Cache for C++ trees: map active game index (or just parallel slot) to C++ object
         self.trees: List[Optional[mcts_cpp.MCTS]] = []
@@ -80,7 +84,14 @@ class MCTS:
 
         # Ensure we have enough C++ trees
         while len(self.trees) < batch_size:
-            self.trees.append(mcts_cpp.MCTS(self.c_puct, self.num_simulations))
+            self.trees.append(
+                mcts_cpp.MCTS(
+                    self.c_puct,
+                    self.num_simulations,
+                    self.dirichlet_alpha,
+                    self.dirichlet_epsilon,
+                )
+            )
 
         # 1. Sync / Reset logic
         active_trees = []

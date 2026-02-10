@@ -96,6 +96,8 @@ def verify_hybrid_mcts(num_games: int = 10):
         num_simulations=config.mcts.num_simulations,
         c_puct=config.mcts.c_puct,
         temperature=config.mcts.temperature,
+        dirichlet_alpha=config.mcts.dirichlet_alpha,
+        dirichlet_epsilon=config.mcts.dirichlet_epsilon,
     )
 
     # AsyncStockfishVerifier for tree search
@@ -127,5 +129,4 @@ def verify_hybrid_mcts(num_games: int = 10):
 
     sv.close()
     print("🎉 Hybrid MCTS Verification Passed!")
-
 

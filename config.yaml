@@ -4,29 +4,31 @@ algorithm: "ppo_mcts"
 # Reward Settings
 rewards:
   stockfish_path: "/usr/games/stockfish"
-  stockfish_depth: 8
-  stockfish_hash: 256 # Higher hash for better performance
-  num_workers: 6  # Leave room for OS/Training loop on a 64-core machine
-  stockfish_weight: 0.8
-  material_weight: 0.1
+  stockfish_depth: 10
+  stockfish_hash: 256
+  num_workers: 8
+  stockfish_weight: 0.7
+  material_weight: 0.2
   outcome_weight: 0.1
 
 # General Training Settings
 training:
-  total_games: 500000
+  total_games: 50000
   batch_size: 2048
   games_per_update: 2048
   lr: 0.0001
   checkpoint_dir: "/checkpoints"
-  buffer_capacity: 500000
-  num_parallel_games: 512  # Reduced from 2048 to fit 64GB RAM with 1000 sims
+  buffer_capacity: 400000
+  num_parallel_games: 256
   device: "cuda"  # 'cpu', 'cuda', 'mps' (auto-detected if cleaner)
 
 # MCTS Specific Settings
 mcts:
-  num_simulations: 1000
+  num_simulations: 800
   c_puct: 1.5
   temperature: 1.0
+  dirichlet_alpha: 0.03
+  dirichlet_epsilon: 0.25
 
 # GRPO Specific Settings
 grpo:

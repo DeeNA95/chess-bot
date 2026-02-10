@@ -5,6 +5,8 @@
 #include <iostream>
 #include <cstdlib>
 #include <mutex>
+#include <numeric>
+#include <random>
 
 #include "chess.hpp"
 
@@ -100,8 +102,13 @@ private:
 // ============================================================================
 class MCTS {
 public:
-    MCTS(float c_puct, int num_simulations)
-        : c_puct_(c_puct), num_simulations_(num_simulations), pool_(NodePool::DEFAULT_CAPACITY) {}
+    MCTS(float c_puct, int num_simulations, float dirichlet_alpha, float dirichlet_epsilon)
+        : c_puct_(c_puct),
+          num_simulations_(num_simulations),
+          dirichlet_alpha_(dirichlet_alpha),
+          dirichlet_epsilon_(dirichlet_epsilon),
+          pool_(NodePool::DEFAULT_CAPACITY),
+          rng_(std::random_device{}()) {}
 
     void reset(const std::string& fen) {
         pool_.clear();
@@ -176,6 +183,13 @@ public:
         chess::Movelist moves;
         chess::movegen::legalmoves(moves, board);
 
+        const bool apply_dirichlet = (node->depth == 0 && dirichlet_epsilon_ > 0.0f && dirichlet_alpha_ > 0.0f);
+        std::vector<float> noise;
+        if (apply_dirichlet) {
+            noise = sample_dirichlet(static_cast<int>(moves.size()), dirichlet_alpha_);
+        }
+
+        int move_idx = 0;
         for (const auto& move : moves) {
             int from = move.from().index();
             int to = move.to().index();
@@ -185,12 +199,17 @@ public:
             if (action_idx < (int)policy_probs.size()) {
                 prior = policy_probs[action_idx];
             }
+            if (apply_dirichlet) {
+                // Root-only exploration noise (AlphaZero-style).
+                prior = (1.0f - dirichlet_epsilon_) * prior + dirichlet_epsilon_ * noise[move_idx];
+            }
 
             chess::Board child_board = board;
             child_board.makeMove(move);
 
             Node* child = pool_.allocate(child_board, node, move, prior, node->depth + 1);
             node->children.push_back(child);
+            ++move_idx;
         }
 
         node->is_expanded = true;
@@ -233,6 +252,13 @@ public:
                 chess::Movelist moves;
                 chess::movegen::legalmoves(moves, board);
 
+                const bool apply_dirichlet = (leaf->depth == 0 && tree->dirichlet_epsilon_ > 0.0f && tree->dirichlet_alpha_ > 0.0f);
+                std::vector<float> noise;
+                if (apply_dirichlet) {
+                    noise = tree->sample_dirichlet(static_cast<int>(moves.size()), tree->dirichlet_alpha_);
+                }
+
+                int move_idx = 0;
                 for (const auto& move : moves) {
                     int from = move.from().index();
                     int to = move.to().index();
@@ -242,12 +268,17 @@ public:
                     if (action_idx < 4096) {
                         prior = leaf_policy[action_idx];
                     }
+                    if (apply_dirichlet) {
+                        // Root-only exploration noise (AlphaZero-style).
+                        prior = (1.0f - tree->dirichlet_epsilon_) * prior + tree->dirichlet_epsilon_ * noise[move_idx];
+                    }
 
                     chess::Board child_board = board;
                     child_board.makeMove(move);
 
                     Node* child = tree->pool_.allocate(child_board, leaf, move, prior, leaf->depth + 1);
                     leaf->children.push_back(child);
+                    ++move_idx;
                 }
                 leaf->is_expanded = true;
 
@@ -336,7 +367,34 @@ private:
     Node* root_ = nullptr;  // Raw pointer, pool owns the memory
     float c_puct_;
     int num_simulations_;
+    float dirichlet_alpha_;
+    float dirichlet_epsilon_;
     NodePool pool_;
+    std::mt19937 rng_;
+
+    std::vector<float> sample_dirichlet(int size, float alpha) {
+        std::vector<float> samples(size, 0.0f);
+        if (size <= 0 || alpha <= 0.0f) return samples;
+
+        std::gamma_distribution<float> gamma(alpha, 1.0f);
+        float sum = 0.0f;
+        for (int i = 0; i < size; ++i) {
+            samples[i] = gamma(rng_);
+            sum += samples[i];
+        }
+
+        if (sum <= 0.0f) {
+            float uniform = 1.0f / static_cast<float>(size);
+            std::fill(samples.begin(), samples.end(), uniform);
+            return samples;
+        }
+
+        float inv_sum = 1.0f / sum;
+        for (int i = 0; i < size; ++i) {
+            samples[i] *= inv_sum;
+        }
+        return samples;
+    }
 };
 
 // ============================================================================

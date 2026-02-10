@@ -4,14 +4,14 @@ import chess
 from src.search.mcts import MCTS
 from src.training.trainer import play_games_batch
 from src.core.state_encoder import StateEncoder
-from src.models.transformer_net import ChessTransformerNet
+from src.models.transformer_net import ChessTransformerNetV2
 from src.utils import get_device
 
 def verify_performance():
     device = get_device()
     print(f"Verifying performance on {device}")
 
-    model = ChessTransformerNet(num_input_planes=116).to(device)
+    model = ChessTransformerNetV2(num_input_planes=116).to(device)
     encoder = StateEncoder(device=str(device))
     mcts = MCTS(model=model, encoder=encoder, device=str(device), num_simulations=20)
 

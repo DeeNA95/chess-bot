@@ -8,6 +8,8 @@ class MCTSSettings:
     num_simulations: int = 50
     c_puct: float = 1.5
     temperature: float = 1.0
+    dirichlet_alpha: float = 0.03
+    dirichlet_epsilon: float = 0.0
 
 @dataclass
 class GRPOSettings:
