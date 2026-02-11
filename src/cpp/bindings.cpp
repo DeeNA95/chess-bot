@@ -52,10 +52,12 @@ PYBIND11_MODULE(mcts_cpp, m) {
             int total_size = batch_size * 116 * 64;
             std::memset(raw_ptr, 0, total_size * sizeof(float));
 
-            // Release GIL for the encoding loop
+                // Release GIL for the encoding loop
             {
                 py::gil_scoped_release release;
-                // Sequential loop (OpenMP removed for stability with Python multiprocessing)
+                #ifdef _OPENMP
+                #pragma omp parallel for
+                #endif
                 for (int i = 0; i < batch_size; ++i) {
                     if (nodes[i]) mcts::encode_single_node(nodes[i], raw_ptr, i, total_size);
                 }
@@ -139,5 +141,15 @@ PYBIND11_MODULE(mcts_cpp, m) {
             std::cerr << "C++ Exception in select_leaf_batch: " << e.what() << std::endl;
             throw;
         }
+    });
+
+    m.def("get_openmp_info", []() {
+        std::string info = "OpenMP Status: ";
+        #ifdef _OPENMP
+        info += "ENABLED. Max Threads: " + std::to_string(omp_get_max_threads());
+        #else
+        info += "DISABLED.";
+        #endif
+        return info;
     });
 }
