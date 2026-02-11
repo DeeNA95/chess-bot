@@ -626,17 +626,22 @@ def train_loop(config_path: str = "config.yaml"):
     rubric = None
     if config.algorithm in ["ppo_mcts", "grpo_mcts"]:
         rubric = ChessRubric()
-        rubric.add_verifier(
-            AsyncStockfishVerifier(
-                config.rewards.stockfish_path,
-                depth=config.rewards.stockfish_depth,
-                num_workers=config.rewards.num_workers,
-                hash_size=config.rewards.stockfish_hash
-            ),
-            weight=config.rewards.stockfish_weight
+        sf_verifier = AsyncStockfishVerifier(
+            config.rewards.stockfish_path,
+            depth=config.rewards.stockfish_depth,
+            num_workers=config.rewards.num_workers,
+            hash_size=config.rewards.stockfish_hash
         )
+        rubric.add_verifier(sf_verifier, weight=config.rewards.stockfish_weight)
         rubric.add_verifier(MaterialVerifier(), weight=config.rewards.material_weight)
         rubric.add_verifier(OutcomeVerifier(), weight=config.rewards.outcome_weight)
+        # Warm up Stockfish pool to surface startup issues early.
+        try:
+            warmup_fen = chess.Board().fen()
+            warmup_vals = sf_verifier.verify_batch([warmup_fen])
+            logger.info(f'Stockfish warmup: {warmup_vals}')
+        except Exception as e:
+            logger.error(f'Stockfish warmup failed: {e}')
 
     optimizer = torch.optim.Adam(agent.model.parameters(), lr=config.training.lr)
     scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
@@ -647,6 +652,7 @@ def train_loop(config_path: str = "config.yaml"):
     games_played = start_game
     update_count = 0
     last_info_time = time.time()
+    last_buffer_log = time.time()
 
     use_self_play_workers = (
         config.algorithm == "ppo_mcts"
@@ -768,6 +774,14 @@ def train_loop(config_path: str = "config.yaml"):
                 games_played += config.training.num_parallel_games
 
             play_time = time.time() - start_play
+            if time.time() - last_buffer_log > 10:
+                worker_count = config.self_play.num_workers if use_self_play_workers else 0
+                logger.info(
+                    f'Play: games={games_this_round} samples={len(new_samples)} '
+                    f'buffer={len(buffer)}/{config.training.buffer_capacity} '
+                    f'workers={worker_count} play_time={play_time:.2f}s'
+                )
+                last_buffer_log = time.time()
 
             # 2. Training Updates
             if len(buffer) >= config.training.batch_size:
