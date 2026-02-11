@@ -156,6 +156,8 @@ class MCTS:
                     if leaf.depth == 1 and verifier:
                         verify_indices.append(i)
 
+            print(f"DEBUG: Categorized leaves. Expand: {len(expand_indices)}, Verify: {len(verify_indices)}", flush=True)
+
             # Stockfish verification
             stockfish_values = {}
             use_internal_sf = self._stockfish_engine is not None
@@ -182,10 +184,13 @@ class MCTS:
                 subset_trees = [active_trees[tree_indices[i]] for i in expand_indices]
 
                 encoded_states = mcts_cpp.encode_batch(subset_leaves)
+                print(f"DEBUG: Encoded batch. Shape: {encoded_states.shape}", flush=True)
                 obs_tensor = torch.from_numpy(encoded_states).to(self.device).float()
 
+                print(f"DEBUG: Running model inference on {len(encoded_states)} items...", flush=True)
                 with torch.no_grad():
                     logits, values = self.model(obs_tensor)
+                print("DEBUG: Inference done.", flush=True)
 
                 policy_probs = torch.softmax(logits, dim=1).cpu().numpy()
                 values_np = values.cpu().numpy().flatten()
@@ -199,7 +204,9 @@ class MCTS:
                         values_np[j] = stockfish_values[leaf_idx]
 
                 # expand_batch_fast handles expansion + backprop (with VL undo)
+                print("DEBUG: Calling expand_batch_fast...", flush=True)
                 mcts_cpp.expand_batch_fast(subset_trees, subset_leaves, policy_probs, values_np)
+                print("DEBUG: expand_batch_fast done.", flush=True)
 
             # Handle hijack updates (already expanded, just need VL undo + value update)
             for idx in verify_indices:
