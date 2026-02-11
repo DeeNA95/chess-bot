@@ -65,6 +65,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--sims", type=int, default=100)
+    parser.add_argument("--leaves_per_sim", type=int, default=32)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
@@ -90,7 +91,7 @@ def main():
             num_simulations=args.sims,
             c_puct=2.0,
             max_nodes_per_tree=200000, # Large buffer
-            leaves_per_sim=args.batch_size # Corresponds to tree search parallel leaf selection
+            leaves_per_sim=args.leaves_per_sim
         )
 
         # We need to simulate 'leaves_per_sim' being roughly equal to batch_size

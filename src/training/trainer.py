@@ -589,6 +589,9 @@ def play_games_ppo_mcts_batched(
         active_indices = next_active_indices
         move_count += 1
 
+        if move_count % 10 == 0:
+            print(f"  [Self-Play] Step {move_count}/{max_moves} | Active Games: {len(active_indices)}", flush=True)
+
     # Timeouts
     for idx in active_indices:
         samples[idx][-1].done = True
