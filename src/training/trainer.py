@@ -6,6 +6,7 @@ import time
 import random
 import logging
 import multiprocessing as mp
+import io
 from typing import List, Tuple, Dict, Any, Optional
 from dataclasses import dataclass
 from collections import deque
@@ -117,7 +118,9 @@ def _self_play_worker(
         if cmd["type"] == "shutdown":
             break
         if cmd["type"] == "load_state":
-            agent.model.load_state_dict(cmd["state_dict"], strict=True)
+            state_bytes = cmd["state_bytes"]
+            state_dict = torch.load(io.BytesIO(state_bytes), map_location="cpu")
+            agent.model.load_state_dict(state_dict, strict=True)
             result_queue.put({"worker_id": worker_id, "type": "load_ack"})
             continue
         if cmd["type"] != "play":
@@ -651,8 +654,11 @@ def train_loop(config_path: str = "config.yaml"):
                 k: v.detach().cpu()
                 for k, v in agent.model.state_dict().items()
             }
+            buf = io.BytesIO()
+            torch.save(state_dict, buf)
+            state_bytes = buf.getvalue()
             for cmd_q in cmd_queues:
-                cmd_q.put({"type": "load_state", "state_dict": state_dict})
+                cmd_q.put({"type": "load_state", "state_bytes": state_bytes})
             for _ in range(len(cmd_queues)):
                 result_queue.get()
 
