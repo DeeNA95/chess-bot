@@ -128,11 +128,13 @@ def _self_play_worker(
 
         num_games = cmd["num_games"]
         max_moves = cmd["max_moves"]
+        flush_every_moves = cmd.get("flush_every_moves", 0)
 
         boards = [chess.Board() for _ in range(num_games)]
         active_indices = list(range(num_games))
         last_moves: List[Optional[chess.Move]] = [None] * num_games
         move_count = 0
+        last_flush_move = 0
         steps: List[Dict[str, Any]] = []
         last_step_index: List[Optional[int]] = [None] * num_games
 
@@ -147,7 +149,9 @@ def _self_play_worker(
                 board = boards[idx]
                 policy, value = search_results[i]
 
-                action_idx, mcts_log_prob = _sample_action_from_policy(board, policy, mcts.temperature)
+                action_idx, mcts_log_prob = _sample_action_from_policy(
+                    board, policy, mcts.temperature, log_invalid=True
+                )
                 move = _action_to_move(board, action_idx)
 
                 captured_piece = None
@@ -182,6 +186,17 @@ def _self_play_worker(
             active_indices = next_active_indices
             move_count += 1
 
+            if flush_every_moves and (move_count - last_flush_move) >= flush_every_moves:
+                if steps:
+                    result_queue.put({
+                        "worker_id": worker_id,
+                        "type": "play_result",
+                        "steps": steps,
+                        "games_played": 0,
+                    })
+                    steps = []
+                last_flush_move = move_count
+
         if active_indices:
             # Mark the last step of each unfinished game as done due to timeout.
             for idx in active_indices:
@@ -189,12 +204,13 @@ def _self_play_worker(
                 if step_idx is not None:
                     steps[step_idx]["done"] = True
 
-        result_queue.put({
-            "worker_id": worker_id,
-            "type": "play_result",
-            "steps": steps,
-            "games_played": num_games,
-        })
+        if steps:
+            result_queue.put({
+                "worker_id": worker_id,
+                "type": "play_result",
+                "steps": steps,
+                "games_played": num_games,
+            })
 
 def play_games_mcts(
     mcts: MCTS,
@@ -381,7 +397,9 @@ def play_games_ppo_mcts(
 
             # Sample action from MCTS policy (NOT the raw network)
             # This makes MCTS the "behavior policy"
-            action_idx, mcts_log_prob = _sample_action_from_policy(board, policy, mcts.temperature)
+            action_idx, mcts_log_prob = _sample_action_from_policy(
+                board, policy, mcts.temperature, log_invalid=True
+            )
             move = _action_to_move(board, action_idx)
 
             # Need to check for captures BEFORE pushing for MaterialVerifier
@@ -507,9 +525,16 @@ def _action_to_move(board: chess.Board, action_idx: int) -> chess.Move:
 def _move_to_action_idx(move: chess.Move) -> int:
     return move.from_square * 64 + move.to_square
 
-def _sample_action_from_policy(board: chess.Board, policy: torch.Tensor, temperature: float) -> Tuple[int, float]:
+def _sample_action_from_policy(
+    board: chess.Board,
+    policy: torch.Tensor,
+    temperature: float,
+    log_invalid: bool = False,
+) -> Tuple[int, float]:
     """Sample an action index and log-prob from a policy tensor with safety checks."""
     if policy is None or policy.numel() == 0:
+        if log_invalid:
+            logger.warning("Invalid policy: empty tensor")
         legal_moves = list(board.legal_moves)
         move = random.choice(legal_moves)
         return _move_to_action_idx(move), 0.0
@@ -517,6 +542,8 @@ def _sample_action_from_policy(board: chess.Board, policy: torch.Tensor, tempera
     policy = policy.float().cpu()
     total = float(policy.sum().item())
     if not torch.isfinite(policy).all() or total <= 0.0:
+        if log_invalid:
+            logger.warning(f"Invalid policy: finite={torch.isfinite(policy).all().item()} sum={total:.6f}")
         legal_moves = list(board.legal_moves)
         move = random.choice(legal_moves)
         return _move_to_action_idx(move), 0.0
@@ -720,6 +747,7 @@ def train_loop(config_path: str = "config.yaml"):
                             "type": "play",
                             "num_games": config.self_play.games_per_worker,
                             "max_moves": config.self_play.max_moves,
+                            "flush_every_moves": config.self_play.flush_every_moves,
                         })
 
                     steps = []
@@ -736,6 +764,8 @@ def train_loop(config_path: str = "config.yaml"):
                     infos = []
                     pre_boards = []
                     for step in steps:
+                        if step["action_idx"] < 0:
+                            continue
                         board = chess.Board(step["fen_pre"])
                         move = chess.Move.from_uci(step["move_uci"])
                         pre_boards.append(board)
@@ -748,6 +778,8 @@ def train_loop(config_path: str = "config.yaml"):
                     reward_idx = 0
                     new_samples = []
                     for step in steps:
+                        if step["action_idx"] < 0:
+                            continue
                         board = pre_boards[reward_idx]
                         reward = rewards[reward_idx]
                         reward_idx += 1
@@ -915,6 +947,12 @@ def train_step_ppo(ppo_node, optimizer, scaler, samples: List[PPOSample], device
         )
     loss = metrics["loss"]
 
+    if isinstance(metrics.get("logits"), torch.Tensor):
+        logits = metrics["logits"]
+        if not torch.isfinite(logits).all():
+            logger.error("PPO logits contain NaN/Inf")
+        elif float(logits.max().item()) <= 0.0:
+            logger.warning(f"PPO logits max <= 0: max={logits.max().item():.6f}")
     if torch.isnan(loss) or torch.isinf(loss):
         logger.error(f"NaN/Inf Loss detected! Policy Loss: {metrics['policy_loss']}, Value Loss: {metrics['value_loss']}, Entropy: {metrics.get('entropy')}")
         logger.error(f"Advantages: min={advantages.min()}, max={advantages.max()}, mean={advantages.mean()}")
