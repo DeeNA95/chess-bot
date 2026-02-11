@@ -53,7 +53,7 @@ async def startup_event():
     encoder = StateEncoder(device=device)
 
     # Initialize MCTS with the loaded model
-    mcts = MCTS(model=agent.model, encoder=encoder, device=device, num_simulations=10)
+    mcts = MCTS(model=agent.model, encoder=encoder, device=device, num_simulations=10, max_nodes_per_tree=100000)
 
     # Load checkpoint
     # Checkpoint is expected in root (via scp) or checkpoints dir
@@ -89,7 +89,8 @@ async def predict_move(req: MoveRequest):
             model=agent.model,
             encoder=encoder,
             device=device,
-            num_simulations=req.num_simulations
+            num_simulations=req.num_simulations,
+            max_nodes_per_tree=100000,
         )
 
     # Run MCTS Search

@@ -455,6 +455,7 @@ public:
     }
 
     int get_root_visits() { return root_ ? root_->visit_count : 0; }
+    size_t get_pool_size() { return pool_.size(); }
 
     // Expose pool for static expand_batch
     NodePool& pool() { return pool_; }

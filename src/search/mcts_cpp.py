@@ -26,6 +26,7 @@ class MCTS:
         stockfish_depth: int = 3,
         reuse_tree: bool = True,
         leaves_per_sim: int = 8,
+        max_nodes_per_tree: int = 0,
     ):
         self.model = model
         self.encoder = encoder
@@ -37,6 +38,7 @@ class MCTS:
         self.dirichlet_epsilon = dirichlet_epsilon
         self.reuse_tree = reuse_tree
         self.leaves_per_sim = leaves_per_sim
+        self.max_nodes_per_tree = max_nodes_per_tree
 
         self.trees: List[Optional[mcts_cpp.MCTS]] = []
 
@@ -109,7 +111,9 @@ class MCTS:
         for i, board in enumerate(boards):
             tree = self.trees[i]
             reused = False
-            if self.reuse_tree and last_moves and last_moves[i] is not None:
+            if self.max_nodes_per_tree and tree.get_pool_size() >= self.max_nodes_per_tree:
+                tree.reset(board.fen())
+            elif self.reuse_tree and last_moves and last_moves[i] is not None:
                 move = last_moves[i]
                 from_sq = move.from_square
                 to_sq = move.to_square

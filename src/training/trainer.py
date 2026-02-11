@@ -456,6 +456,7 @@ def train_loop(config_path: str = "config.yaml"):
             dirichlet_epsilon=config.mcts.dirichlet_epsilon,
             reuse_tree=config.mcts.reuse_tree,
             leaves_per_sim=config.mcts.leaves_per_sim,
+            max_nodes_per_tree=config.mcts.max_nodes_per_tree,
         )
 
     if config.algorithm == "mcts":

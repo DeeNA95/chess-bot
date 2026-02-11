@@ -39,6 +39,7 @@ mcts:
   dirichlet_epsilon: 0.25
   reuse_tree: true
   leaves_per_sim: 8
+  max_nodes_per_tree: 100000
 
 # GRPO Specific Settings
 grpo:

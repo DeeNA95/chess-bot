@@ -20,6 +20,7 @@ class MCTSSettings:
     dirichlet_epsilon: float = 0.0
     reuse_tree: bool = True
     leaves_per_sim: int = 8
+    max_nodes_per_tree: int = 100000
 
 @dataclass
 class GRPOSettings:

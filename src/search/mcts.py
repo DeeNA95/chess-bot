@@ -57,6 +57,7 @@ class MCTS:
         temperature: float = 1.0,
         dirichlet_alpha: float = 0.03,
         dirichlet_epsilon: float = 0.0,
+        max_nodes_per_tree: int = 0,
     ):
         self.model = model
         self.encoder = encoder
@@ -66,6 +67,7 @@ class MCTS:
         self.temperature = temperature
         self.dirichlet_alpha = dirichlet_alpha
         self.dirichlet_epsilon = dirichlet_epsilon
+        self.max_nodes_per_tree = max_nodes_per_tree
 
     def search_batch(self, boards: List[chess.Board]) -> List[Tuple[torch.Tensor, float]]:
         """

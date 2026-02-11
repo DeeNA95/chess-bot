@@ -36,6 +36,7 @@ PYBIND11_MODULE(mcts_cpp, m) {
         .def("get_root_counts", &mcts::MCTS::get_root_counts)
         .def("get_root_value", &mcts::MCTS::get_root_value)
         .def("get_root_visits", &mcts::MCTS::get_root_visits)
+        .def("get_pool_size", &mcts::MCTS::get_pool_size)
         .def("advance_root", &mcts::MCTS::advance_root)
         .def("get_root", &mcts::MCTS::get_root, py::return_value_policy::reference_internal)
         .def("undo_virtual_loss_and_update", &mcts::MCTS::undo_virtual_loss_and_update)

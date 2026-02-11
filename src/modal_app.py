@@ -98,6 +98,7 @@ def verify_hybrid_mcts(num_games: int = 10):
         temperature=config.mcts.temperature,
         dirichlet_alpha=config.mcts.dirichlet_alpha,
         dirichlet_epsilon=config.mcts.dirichlet_epsilon,
+        max_nodes_per_tree=config.mcts.max_nodes_per_tree,
     )
 
     # AsyncStockfishVerifier for tree search
