@@ -26,15 +26,16 @@ training:
   games_per_update: 2048
   lr: 0.0001
   checkpoint_dir: "./checkpoints"
-  buffer_capacity: 200000
-  num_parallel_games: 512
+  buffer_capacity: 500000
+  num_parallel_games: 1024 # 3090 can handle large batches, 96 cores can drive MCTS
   device: "cuda"
 
 # Self-play worker settings (multi-process)
+# Set num_workers to 0 to use optimized Single-Process Batched Self-Play (Recommended for GPU)
 self_play:
-  num_workers: 64
-  games_per_worker: 4
-  max_moves: 100
+  num_workers: 0
+  games_per_worker: 4 # Ignored if num_workers=0, num_parallel_games used instead
+  max_moves: 200
   flush_every_moves: 10
   sync_weights_every: 1
 

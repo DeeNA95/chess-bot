@@ -58,6 +58,10 @@ class MCTS:
         dirichlet_alpha: float = 0.03,
         dirichlet_epsilon: float = 0.0,
         max_nodes_per_tree: int = 0,
+        reuse_tree: bool = False,
+        leaves_per_sim: int = 8,
+        stockfish_path: Optional[str] = None,
+        stockfish_depth: int = 3,
     ):
         self.model = model
         self.encoder = encoder
@@ -68,13 +72,28 @@ class MCTS:
         self.dirichlet_alpha = dirichlet_alpha
         self.dirichlet_epsilon = dirichlet_epsilon
         self.max_nodes_per_tree = max_nodes_per_tree
+        self.reuse_tree = reuse_tree # Not implemented in Python
+        self.leaves_per_sim = leaves_per_sim # Not implemented in Python
 
-    def search_batch(self, boards: List[chess.Board]) -> List[Tuple[torch.Tensor, float]]:
+        # Stockfish support
+        self._stockfish_engine = None
+        if stockfish_path:
+             print("Warning: Python MCTS does not support Stockfish verification yet.")
+
+
+    def search_batch(
+        self,
+        boards: List[chess.Board],
+        verifier: Optional[Any] = None,
+        last_moves: Optional[List[Optional[chess.Move]]] = None
+    ) -> List[Tuple[torch.Tensor, float]]:
         """
         Run Batched MCTS for a list of active games.
 
         Args:
             boards: List of current board states (one per game).
+            verifier: Optional verifier (ignored in Python impl).
+            last_moves: Optional last moves (ignored in Python impl).
 
         Returns:
             List of (policy, root_value) tuples, one for each game.

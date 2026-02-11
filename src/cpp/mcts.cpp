@@ -5,8 +5,14 @@
 #include <iostream>
 #include <cstdlib>
 #include <mutex>
-#include <numeric>
+// #include <numeric>
 #include <random>
+
+#include <random>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include "chess.hpp"
 
@@ -173,6 +179,9 @@ public:
         out_leaves.resize(batch_size);
 
         // Sequential loop (OpenMP removed for stability with Python multiprocessing)
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
         for (int i = 0; i < batch_size; ++i) {
             out_leaves[i] = trees[i]->select_leaf();
         }
@@ -242,6 +251,9 @@ public:
         if (batch_size <= 0) return;
 
         // Sequential loop (OpenMP removed for stability with Python multiprocessing)
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
         for (int i = 0; i < batch_size; ++i) {
             Node* leaf = leaves[i];
             float val = values[i];
@@ -363,11 +375,22 @@ public:
         out_tree_indices.clear();
         out_leaves.reserve(trees.size() * k);
         out_tree_indices.reserve(trees.size() * k);
+        // Note: std::vector is not thread-safe for push_back.
+        // We need to pre-allocate and assign by index if using OpenMP.
+        // Flattened index mapping: idx = t * k + j
+
+        out_leaves.resize(trees.size() * k);
+        out_tree_indices.resize(trees.size() * k);
+
+        #ifdef _OPENMP
+        #pragma omp parallel for collapse(2)
+        #endif
         for (int t = 0; t < (int)trees.size(); t++) {
             for (int j = 0; j < k; j++) {
                 Node* leaf = trees[t]->select_leaf_vl();
-                out_leaves.push_back(leaf);
-                out_tree_indices.push_back(t);
+                int idx = t * k + j;
+                out_leaves[idx] = leaf;
+                out_tree_indices[idx] = t;
             }
         }
     }

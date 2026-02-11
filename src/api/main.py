@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import chess
 import torch
@@ -17,34 +18,14 @@ except ImportError:
 
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Global Agent, Encoder, and MCTS
 agent = None
 encoder = None
 mcts = None
 device = "cpu"
 
-class MoveRequest(BaseModel):
-    fen: str
-    num_simulations: int = 100 # Increased default due to speedup
-
-class MoveResponse(BaseModel):
-    uci: str
-    san: str
-    evaluation: float = 0.0
-    win_probability: float = 0.5
-
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global agent, device, encoder, mcts
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading model on {device}...")
@@ -67,6 +48,28 @@ async def startup_event():
         print(f"Model loaded from {checkpoint_path}")
     else:
         print(f"Warning: No checkpoint found! specific path: {checkpoint_path}")
+
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class MoveRequest(BaseModel):
+    fen: str
+    num_simulations: int = 100 # Increased default due to speedup
+
+class MoveResponse(BaseModel):
+    uci: str
+    san: str
+    evaluation: float = 0.0
+    win_probability: float = 0.5
 
 @app.post("/move", response_model=MoveResponse)
 async def predict_move(req: MoveRequest):

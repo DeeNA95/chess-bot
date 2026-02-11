@@ -489,6 +489,113 @@ def play_games_ppo_mcts(
 
     return finished_samples
 
+def play_games_ppo_mcts_batched(
+    agent: ChessAgent,
+    mcts: MCTS,
+    rubric: ChessRubric,
+    encoder: StateEncoder,
+    config: AppConfig,
+    device: torch.device,
+    max_moves: int = 100,
+) -> List[PPOSample]:
+    """
+    Play games for PPO using Batched MCTS in a SINGLE process (OpenMP C++ backend).
+    This maximizes GPU utilization by sending large batches (e.g. 256) to GPU at once.
+    """
+    num_games = config.training.num_parallel_games
+    boards = [chess.Board() for _ in range(num_games)]
+    samples = [[] for _ in range(num_games)]
+    active_indices = list(range(num_games))
+    finished_samples = []
+    last_moves: List[Optional[chess.Move]] = [None] * num_games
+
+    # We need to ensure MCTS has enough trees allocated
+    # search_batch will handle resizing, but we want to be explicit
+
+    move_count = 0
+    while active_indices and move_count < max_moves:
+        current_boards = [boards[i] for i in active_indices]
+        current_last_moves = [last_moves[i] for i in active_indices]
+
+        # 1. Batched MCTS Search (Main Thread + OpenMP)
+        verifier = None
+        if rubric:
+            for v, _ in rubric.verifiers:
+                if isinstance(v, AsyncStockfishVerifier):
+                    verifier = v
+                    break
+
+        # This calls down to C++ with OpenMP if enabled
+        search_results = mcts.search_batch(current_boards, verifier=verifier, last_moves=current_last_moves)
+
+        # 2. Process results
+        mcts_moves = []
+        infos = []
+        batch_boards = []
+        batch_moves = []
+
+        for i, idx in enumerate(active_indices):
+            board = boards[idx]
+            policy, value = search_results[i]
+
+            # Sample action
+            action_idx, mcts_log_prob = _sample_action_from_policy(
+                board, policy, mcts.temperature, log_invalid=True
+            )
+            move = _action_to_move(board, action_idx)
+
+            captured_piece = None
+            if board.is_capture(move):
+                if board.is_en_passant(move):
+                    captured_piece = chess.PAWN
+                else:
+                    captured_piece = board.piece_at(move.to_square)
+                    if captured_piece: captured_piece = captured_piece.piece_type
+
+            infos.append({'captured_piece': captured_piece})
+            mcts_moves.append((idx, action_idx, mcts_log_prob, move))
+
+            # Push move
+            board.push(move)
+            last_moves[idx] = move
+            batch_boards.append(board)
+            batch_moves.append(move)
+
+        # 3. Batch Rewards
+        rewards = rubric.calculate_reward_batch(batch_boards, batch_moves, infos)
+
+        next_active_indices = []
+        for i, (idx, action_idx, log_prob, move) in enumerate(mcts_moves):
+            reward = rewards[i]
+            board = boards[idx]
+
+            samples[idx].append(PPOSample(
+                observation=encoder.encode(current_boards[i]).cpu(),
+                action=action_idx,
+                log_prob=log_prob,
+                reward=reward,
+                value=float(search_results[i][1]),
+                done=False,
+                mask=encoder.get_action_mask(current_boards[i]).cpu()
+            ))
+
+            if board.is_game_over():
+                samples[idx][-1].done = True
+                finished_samples.extend(samples[idx])
+                last_moves[idx] = None
+            else:
+                next_active_indices.append(idx)
+
+        active_indices = next_active_indices
+        move_count += 1
+
+    # Timeouts
+    for idx in active_indices:
+        samples[idx][-1].done = True
+        finished_samples.extend(samples[idx])
+
+    return finished_samples
+
 def _backfill_rewards(trajectory: List[PPOSample], final_outcome: float):
     """
     Assign rewards for self-play.
@@ -738,7 +845,14 @@ def train_loop(config_path: str = "config.yaml"):
             elif config.algorithm == "ppo_mcts":
                 assert mcts is not None
                 assert rubric is not None
-                if use_self_play_workers:
+
+                # Check for batched mode override or config
+                # For now, we reuse 'use_self_play_workers' flag logic but inverted?
+                # Actually, let's treat num_workers=0 as "run in main process batched"
+                if config.self_play.num_workers == 0:
+                     new_samples = play_games_ppo_mcts_batched(agent, mcts, rubric, encoder, config, device)
+                     games_played += config.training.num_parallel_games
+                elif use_self_play_workers:
                     if config.self_play.sync_weights_every > 0 and update_count % config.self_play.sync_weights_every == 0:
                         _broadcast_weights()
 

@@ -29,12 +29,13 @@ ext_modules = [
 def has_flag(compiler, flagname):
     """Return a boolean indicating whether a flag name is supported on
     the specified compiler."""
+    import distutils.errors
     import tempfile
     with tempfile.NamedTemporaryFile('w', suffix='.cpp') as f:
         f.write('int main (int argc, char **argv) { return 0; }')
         try:
             compiler.compile([f.name], extra_postargs=[flagname])
-        except setuptools.distutils.errors.CompileError:
+        except distutils.errors.CompileError:
             return False
     return True
 
