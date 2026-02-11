@@ -60,6 +60,13 @@ class TrainingSettings:
     device: Optional[str] = None
 
 @dataclass
+class SelfPlaySettings:
+    num_workers: int = 0
+    games_per_worker: int = 4
+    max_moves: int = 100
+    sync_weights_every: int = 1
+
+@dataclass
 class AppConfig:
     algorithm: Literal["mcts", "grpo", "ppo", "ppo_mcts", "grpo_mcts"] = "mcts"
     model: ModelSettings = field(default_factory=ModelSettings)
@@ -68,6 +75,7 @@ class AppConfig:
     grpo: GRPOSettings = field(default_factory=GRPOSettings)
     ppo: PPOSettings = field(default_factory=PPOSettings)
     rewards: RewardSettings = field(default_factory=RewardSettings)
+    self_play: SelfPlaySettings = field(default_factory=SelfPlaySettings)
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> "AppConfig":
@@ -101,6 +109,8 @@ class AppConfig:
 
         if "rewards" in data:
             _update_from_dict(config.rewards, data["rewards"])
+        if "self_play" in data:
+            _update_from_dict(config.self_play, data["self_play"])
 
         return config
 

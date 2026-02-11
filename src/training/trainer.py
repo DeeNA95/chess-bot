@@ -5,6 +5,7 @@ import chess
 import time
 import random
 import logging
+import multiprocessing as mp
 from typing import List, Tuple, Dict, Any, Optional
 from dataclasses import dataclass
 from collections import deque
@@ -73,6 +74,129 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
+def _self_play_worker(
+    worker_id: int,
+    cmd_queue: mp.Queue,
+    result_queue: mp.Queue,
+    config_dict: Dict[str, Any],
+):
+    """Self-play worker for PPO+MCTS. Runs MCTS on CPU and sends step data back."""
+    import chess
+    import torch
+    from src.core.config import AppConfig
+    from src.agents.chess_agent import ChessAgent
+    from src.core.state_encoder import StateEncoder
+    try:
+        from src.search.mcts_cpp import MCTS
+    except ImportError:
+        from src.search.mcts import MCTS
+
+    config = AppConfig.load(config_dict["config_path"])
+    device = torch.device("cpu")
+    torch.set_num_threads(1)
+
+    agent = ChessAgent(device=str(device), lr=config.training.lr, model_config=config.model)
+    agent.model.eval()
+    encoder = StateEncoder(device=str(device))
+    mcts = MCTS(
+        model=agent.model,
+        encoder=encoder,
+        device=str(device),
+        num_simulations=config.mcts.num_simulations,
+        c_puct=config.mcts.c_puct,
+        temperature=config.mcts.temperature,
+        dirichlet_alpha=config.mcts.dirichlet_alpha,
+        dirichlet_epsilon=config.mcts.dirichlet_epsilon,
+        reuse_tree=config.mcts.reuse_tree,
+        leaves_per_sim=config.mcts.leaves_per_sim,
+        max_nodes_per_tree=config.mcts.max_nodes_per_tree,
+    )
+
+    while True:
+        cmd = cmd_queue.get()
+        if cmd["type"] == "shutdown":
+            break
+        if cmd["type"] == "load_state":
+            agent.model.load_state_dict(cmd["state_dict"], strict=True)
+            result_queue.put({"worker_id": worker_id, "type": "load_ack"})
+            continue
+        if cmd["type"] != "play":
+            continue
+
+        num_games = cmd["num_games"]
+        max_moves = cmd["max_moves"]
+
+        boards = [chess.Board() for _ in range(num_games)]
+        active_indices = list(range(num_games))
+        last_moves: List[Optional[chess.Move]] = [None] * num_games
+        move_count = 0
+        steps: List[Dict[str, Any]] = []
+        last_step_index: List[Optional[int]] = [None] * num_games
+
+        while active_indices and move_count < max_moves:
+            current_boards = [boards[i] for i in active_indices]
+            current_last_moves = [last_moves[i] for i in active_indices]
+
+            search_results = mcts.search_batch(current_boards, last_moves=current_last_moves)
+
+            next_active_indices = []
+            for i, idx in enumerate(active_indices):
+                board = boards[idx]
+                policy, value = search_results[i]
+
+                if mcts.temperature > 0:
+                    action_idx = int(torch.multinomial(policy, 1).item())
+                else:
+                    action_idx = int(policy.argmax().item())
+
+                move = _action_to_move(board, action_idx)
+                mcts_log_prob = float(torch.log(policy[action_idx] + 1e-8).item())
+
+                captured_piece = None
+                if board.is_capture(move):
+                    if board.is_en_passant(move):
+                        captured_piece = chess.PAWN
+                    else:
+                        captured_piece = board.piece_at(move.to_square)
+                        if captured_piece:
+                            captured_piece = captured_piece.piece_type
+
+                fen_pre = board.fen()
+                board.push(move)
+                last_moves[idx] = move
+
+                steps.append({
+                    "fen_pre": fen_pre,
+                    "move_uci": move.uci(),
+                    "action_idx": action_idx,
+                    "log_prob": mcts_log_prob,
+                    "value": float(value),
+                    "captured_piece": captured_piece,
+                    "done": board.is_game_over(),
+                })
+                last_step_index[idx] = len(steps) - 1
+
+                if board.is_game_over():
+                    last_moves[idx] = None
+                else:
+                    next_active_indices.append(idx)
+
+            active_indices = next_active_indices
+            move_count += 1
+
+        if active_indices:
+            # Mark the last step of each unfinished game as done due to timeout.
+            for idx in active_indices:
+                step_idx = last_step_index[idx]
+                if step_idx is not None:
+                    steps[step_idx]["done"] = True
+
+        result_queue.put({
+            "worker_id": worker_id,
+            "type": "play_result",
+            "steps": steps,
+            "games_played": num_games,
+        })
 
 def play_games_mcts(
     mcts: MCTS,
@@ -497,68 +621,169 @@ def train_loop(config_path: str = "config.yaml"):
     update_count = 0
     last_info_time = time.time()
 
-    while games_played < config.training.total_games:
-        # 1. Play Games
-        start_play = time.time()
-        new_samples = []
-        if config.algorithm == "mcts":
-            assert mcts is not None
-            new_samples = play_games_mcts(mcts, encoder, config.training.num_parallel_games, device)
-        elif config.algorithm == "grpo":
-            new_samples = play_games_grpo(agent, encoder, config, device)
-        elif config.algorithm == "ppo":
-            new_samples = play_games_ppo(agent, encoder, config, device)
-        elif config.algorithm == "ppo_mcts":
-            assert mcts is not None
-            assert rubric is not None
-            new_samples = play_games_ppo_mcts(agent, mcts, rubric, encoder, config, device)
-        elif config.algorithm == "grpo_mcts":
-            assert mcts is not None
-            assert rubric is not None
-            new_samples = play_games_grpo_mcts(agent, mcts, rubric, encoder, config, device)
+    use_self_play_workers = (
+        config.algorithm == "ppo_mcts"
+        and config.self_play.num_workers > 0
+        and config.self_play.games_per_worker > 0
+    )
 
-        buffer.extend(new_samples)
-        games_played += config.training.num_parallel_games
-        play_time = time.time() - start_play
+    worker_ctx = None
+    cmd_queues = []
+    result_queue = None
+    workers = []
+    if use_self_play_workers:
+        worker_ctx = mp.get_context("spawn")
+        result_queue = worker_ctx.Queue()
+        config_dict = {"config_path": config_path}
+        for worker_id in range(config.self_play.num_workers):
+            cmd_q = worker_ctx.Queue()
+            cmd_queues.append(cmd_q)
+            p = worker_ctx.Process(
+                target=_self_play_worker,
+                args=(worker_id, cmd_q, result_queue, config_dict),
+                daemon=True,
+            )
+            p.start()
+            workers.append(p)
 
-        # 2. Training Updates
-        if len(buffer) >= config.training.batch_size:
-            start_train = time.time()
-            updates_to_run = max(1, config.training.games_per_update // config.training.num_parallel_games)
+        def _broadcast_weights():
+            state_dict = {
+                k: v.detach().cpu()
+                for k, v in agent.model.state_dict().items()
+            }
+            for cmd_q in cmd_queues:
+                cmd_q.put({"type": "load_state", "state_dict": state_dict})
+            for _ in range(len(cmd_queues)):
+                result_queue.get()
 
-            total_metrics = {}
-            for _ in range(updates_to_run):
-                batch = buffer.sample(config.training.batch_size)
-                if config.algorithm == "mcts":
-                    metrics = train_step_mcts(agent.model, optimizer, scaler, batch, device)
-                elif config.algorithm == "grpo":
-                    metrics = train_step_grpo(grpo_node, optimizer, scaler, batch, device)
-                elif config.algorithm == "grpo_mcts":
-                    metrics = train_step_grpo(grpo_node, optimizer, scaler, batch, device)
-                else: # ppo or ppo_mcts
-                    assert ppo_node is not None
-                    metrics = train_step_ppo(ppo_node, optimizer, scaler, batch, device)
+        _broadcast_weights()
 
-                for k, v in metrics.items():
-                    total_metrics[k] = total_metrics.get(k, 0.0) + v
+    try:
+        while games_played < config.training.total_games:
+            # 1. Play Games
+            start_play = time.time()
+            games_this_round = config.training.num_parallel_games
+            new_samples = []
 
-            for k in total_metrics:
-                total_metrics[k] /= float(updates_to_run)
+            if config.algorithm == "mcts":
+                assert mcts is not None
+                new_samples = play_games_mcts(mcts, encoder, config.training.num_parallel_games, device)
+            elif config.algorithm == "grpo":
+                new_samples = play_games_grpo(agent, encoder, config, device)
+            elif config.algorithm == "ppo":
+                new_samples = play_games_ppo(agent, encoder, config, device)
+            elif config.algorithm == "ppo_mcts":
+                assert mcts is not None
+                assert rubric is not None
+                if use_self_play_workers:
+                    if config.self_play.sync_weights_every > 0 and update_count % config.self_play.sync_weights_every == 0:
+                        _broadcast_weights()
 
-            update_count += 1
-            if time.time() - last_info_time > 10:
-                logger.info(f'[Game {games_played:5d}] Loss: {total_metrics.get("total_loss", total_metrics.get("loss", 0.0)):.4f} | Speed: {config.training.num_parallel_games/play_time:.2f} g/s')
-                last_info_time = time.time()
+                    for cmd_q in cmd_queues:
+                        cmd_q.put({
+                            "type": "play",
+                            "num_games": config.self_play.games_per_worker,
+                            "max_moves": config.self_play.max_moves,
+                        })
 
-            wandb.log({'games_played': games_played, **total_metrics})
+                    steps = []
+                    games_this_round = 0
+                    for _ in range(len(cmd_queues)):
+                        msg = result_queue.get()
+                        if msg["type"] == "play_result":
+                            steps.extend(msg["steps"])
+                            games_this_round += msg["games_played"]
 
-        # Checkpoint
-        if games_played % 100 < config.training.num_parallel_games:
-            save_path = os.path.join(config.training.checkpoint_dir, f'{config.algorithm}_game_{games_played}.pt')
-            agent.save(save_path)
-            logger.info(f'Checkpoint saved: {save_path}')
+                    # Compute rewards in batch using rubric
+                    batch_boards = []
+                    batch_moves = []
+                    infos = []
+                    pre_boards = []
+                    for step in steps:
+                        board = chess.Board(step["fen_pre"])
+                        move = chess.Move.from_uci(step["move_uci"])
+                        pre_boards.append(board)
+                        board.push(move)
+                        batch_boards.append(board)
+                        batch_moves.append(move)
+                        infos.append({"captured_piece": step["captured_piece"]})
 
-    agent.save(os.path.join(config.training.checkpoint_dir, f'{config.algorithm}_final.pt'))
+                    rewards = rubric.calculate_reward_batch(batch_boards, batch_moves, infos) if batch_boards else []
+                    reward_idx = 0
+                    new_samples = []
+                    for step in steps:
+                        board = pre_boards[reward_idx]
+                        reward = rewards[reward_idx]
+                        reward_idx += 1
+                        new_samples.append(PPOSample(
+                            observation=encoder.encode(board).cpu(),
+                            action=step["action_idx"],
+                            log_prob=step["log_prob"],
+                            reward=reward,
+                            value=step["value"],
+                            done=step["done"],
+                            mask=encoder.get_action_mask(board).cpu(),
+                        ))
+
+                    games_played += games_this_round
+                else:
+                    new_samples = play_games_ppo_mcts(agent, mcts, rubric, encoder, config, device)
+            elif config.algorithm == "grpo_mcts":
+                assert mcts is not None
+                assert rubric is not None
+                new_samples = play_games_grpo_mcts(agent, mcts, rubric, encoder, config, device)
+
+            buffer.extend(new_samples)
+            if not use_self_play_workers:
+                games_played += config.training.num_parallel_games
+
+            play_time = time.time() - start_play
+
+            # 2. Training Updates
+            if len(buffer) >= config.training.batch_size:
+                games_per_round = games_this_round if use_self_play_workers else config.training.num_parallel_games
+                updates_to_run = max(1, config.training.games_per_update // games_per_round)
+
+                total_metrics = {}
+                for _ in range(updates_to_run):
+                    batch = buffer.sample(config.training.batch_size)
+                    if config.algorithm == "mcts":
+                        metrics = train_step_mcts(agent.model, optimizer, scaler, batch, device)
+                    elif config.algorithm == "grpo":
+                        metrics = train_step_grpo(grpo_node, optimizer, scaler, batch, device)
+                    elif config.algorithm == "grpo_mcts":
+                        metrics = train_step_grpo(grpo_node, optimizer, scaler, batch, device)
+                    else:  # ppo or ppo_mcts
+                        assert ppo_node is not None
+                        metrics = train_step_ppo(ppo_node, optimizer, scaler, batch, device)
+
+                    for k, v in metrics.items():
+                        total_metrics[k] = total_metrics.get(k, 0.0) + v
+
+                for k in total_metrics:
+                    total_metrics[k] /= float(updates_to_run)
+
+                update_count += 1
+                if time.time() - last_info_time > 10:
+                    speed = games_this_round / play_time if play_time > 0 else 0.0
+                    logger.info(f'[Game {games_played:5d}] Loss: {total_metrics.get("total_loss", total_metrics.get("loss", 0.0)):.4f} | Speed: {speed:.2f} g/s')
+                    last_info_time = time.time()
+
+                wandb.log({'games_played': games_played, **total_metrics})
+
+            # Checkpoint
+            if games_played % 100 < games_this_round:
+                save_path = os.path.join(config.training.checkpoint_dir, f'{config.algorithm}_game_{games_played}.pt')
+                agent.save(save_path)
+                logger.info(f'Checkpoint saved: {save_path}')
+
+        agent.save(os.path.join(config.training.checkpoint_dir, f'{config.algorithm}_final.pt'))
+    finally:
+        if use_self_play_workers:
+            for cmd_q in cmd_queues:
+                cmd_q.put({"type": "shutdown"})
+            for p in workers:
+                p.join(timeout=5)
 
 
 def _load_latest_checkpoint(agent, checkpoint_dir) -> int:

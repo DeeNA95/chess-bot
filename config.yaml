@@ -14,7 +14,7 @@ rewards:
   stockfish_path: "/usr/games/stockfish"
   stockfish_depth: 12
   stockfish_hash: 128
-  num_workers: 64
+  num_workers: 32
   stockfish_weight: 0.7
   material_weight: 0.2
   outcome_weight: 0.1
@@ -29,6 +29,13 @@ training:
   buffer_capacity: 200000
   num_parallel_games: 512
   device: "cuda"
+
+# Self-play worker settings (multi-process)
+self_play:
+  num_workers: 64
+  games_per_worker: 4
+  max_moves: 100
+  sync_weights_every: 1
 
 # MCTS Specific Settings
 mcts:
