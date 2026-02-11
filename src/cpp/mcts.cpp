@@ -78,7 +78,9 @@ public:
 
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
-        nodes_.clear();
+        // Swap with an empty deque to release memory back to the OS.
+        std::deque<Node> empty;
+        nodes_.swap(empty);
     }
 
     // Thread-safe allocation of a new node from the pool

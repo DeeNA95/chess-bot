@@ -14,7 +14,7 @@ rewards:
   stockfish_path: "/usr/games/stockfish"
   stockfish_depth: 12
   stockfish_hash: 128
-  num_workers: 16
+  num_workers: 64
   stockfish_weight: 0.7
   material_weight: 0.2
   outcome_weight: 0.1
@@ -27,7 +27,7 @@ training:
   lr: 0.0001
   checkpoint_dir: "./checkpoints"
   buffer_capacity: 200000
-  num_parallel_games: 256
+  num_parallel_games: 512
   device: "cuda"
 
 # MCTS Specific Settings
