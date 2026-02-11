@@ -12,7 +12,7 @@ model:
 # Reward Settings
 rewards:
   stockfish_path: "/usr/games/stockfish"
-  stockfish_depth: 12
+  stockfish_depth: 3
   stockfish_hash: 128
   num_workers: 32
   stockfish_weight: 0.7
@@ -41,7 +41,7 @@ self_play:
 
 # MCTS Specific Settings
 mcts:
-  num_simulations: 800
+  num_simulations: 400
   c_puct: 1.5
   temperature: 1.0
   dirichlet_alpha: 0.03

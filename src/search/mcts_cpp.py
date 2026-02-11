@@ -84,6 +84,7 @@ class MCTS:
         boards: List[chess.Board],
         verifier: Optional[Any] = None,
         last_moves: Optional[List[Optional[chess.Move]]] = None,
+        game_indices: Optional[List[int]] = None,
     ) -> List[Tuple[torch.Tensor, float]]:
         """
         Run Batched MCTS using C++ with virtual-loss batched leaf evaluation.
@@ -92,11 +93,18 @@ class MCTS:
             boards: List of current board states.
             verifier: Optional AsyncStockfishVerifier for hybrid search.
             last_moves: Optional list of last moves played per game slot (for tree reuse).
+            game_indices: Optional list of persistent game IDs for tree mapping.
+                          If None, maps 0..N, which breaks reuse if subset batching is used.
         """
         batch_size = len(boards)
 
+        # If game_indices not provided, assume 0..batch_size-1 (Legacy behavior)
+        # But for correct reuse, caller MUST provide indices if boards is a subset.
+        indices = game_indices if game_indices is not None else list(range(batch_size))
+
         # Ensure we have enough C++ trees
-        while len(self.trees) < batch_size:
+        max_idx = max(indices) if indices else 0
+        while len(self.trees) <= max_idx:
             self.trees.append(
                 mcts_cpp.MCTS(
                     self.c_puct,
@@ -108,18 +116,26 @@ class MCTS:
 
         # 1. Reset / Reuse logic
         active_trees = []
-        for i, board in enumerate(boards):
-            tree = self.trees[i]
+        for i, idx in enumerate(indices):
+            board = boards[i]
+            tree = self.trees[idx]  # Use persistent index
             reused = False
+
+            # Check pool size limit
             if self.max_nodes_per_tree and tree.get_pool_size() >= self.max_nodes_per_tree:
                 tree.reset(board.fen())
+                reused = False # Explicitly mark as not reused
+            # Attempt reuse
             elif self.reuse_tree and last_moves and last_moves[i] is not None:
                 move = last_moves[i]
                 from_sq = move.from_square
                 to_sq = move.to_square
                 reused = tree.advance_root(from_sq, to_sq)
+
+            # If not successfully reused (or forced reset), full reset
             if not reused:
                 tree.reset(board.fen())
+
             active_trees.append(tree)
 
         # 2. Run Simulations with virtual-loss batched leaf selection

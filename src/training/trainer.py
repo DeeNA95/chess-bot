@@ -526,7 +526,8 @@ def play_games_ppo_mcts_batched(
                     break
 
         # This calls down to C++ with OpenMP if enabled
-        search_results = mcts.search_batch(current_boards, verifier=verifier, last_moves=current_last_moves)
+        # This calls down to C++ with OpenMP if enabled
+        search_results = mcts.search_batch(current_boards, verifier=verifier, last_moves=current_last_moves, game_indices=active_indices)
 
         # 2. Process results
         mcts_moves = []
@@ -1155,11 +1156,22 @@ def play_games_grpo_mcts(
             # If temperature is low, we might get duplicates. GRPO handles this.
 
             # policy is [4096]
+            # MASK ILLEGAL MOVES to prevent crashes if MCTS desyncs
+            legal_moves = list(board.legal_moves)
+            legal_action_indices = [_move_to_action_idx(m) for m in legal_moves]
+
+            # Create mask
+            mask = torch.zeros_like(policy, dtype=torch.bool)
+            mask[legal_action_indices] = True
+
+            # Apply mask to policy (zero out illegal)
+            policy = policy * mask
+
             total = float(policy.sum().item())
             if not torch.isfinite(policy).all() or total <= 0.0:
-                legal_moves = list(board.legal_moves)
+                # Random fallback
                 actions = torch.tensor(
-                    [_move_to_action_idx(random.choice(legal_moves)) for _ in range(group_size)],
+                    [random.choice(legal_action_indices) for _ in range(group_size)],
                     dtype=torch.long,
                 )
                 probs = None
