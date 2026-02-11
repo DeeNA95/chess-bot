@@ -130,10 +130,12 @@ class MCTS:
             step_k = k if sims_left >= k else sims_left
             sims_left -= step_k
 
+            print(f"DEBUG: Calling select_leaves_batch_vl with step_k={step_k}...", flush=True)
             # Select K leaves per tree (with virtual loss)
             all_leaves, tree_indices = mcts_cpp.select_leaves_batch_vl(
                 active_trees, step_k
             )
+            print(f"DEBUG: Returned from select_leaves_batch_vl with {len(all_leaves)} leaves.", flush=True)
 
             if not all_leaves:
                 print(f"DEBUG: No leaves selected. sims_left={sims_left}")
