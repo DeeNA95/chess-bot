@@ -4,6 +4,14 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 @dataclass
+class ModelSettings:
+    embed_dim: int = 512
+    num_layers: int = 8
+    num_heads: int = 8
+    mlp_ratio: float = 4.0
+    dropout: float = 0.1
+
+@dataclass
 class MCTSSettings:
     num_simulations: int = 50
     c_puct: float = 1.5
@@ -51,6 +59,7 @@ class TrainingSettings:
 @dataclass
 class AppConfig:
     algorithm: Literal["mcts", "grpo", "ppo", "ppo_mcts", "grpo_mcts"] = "mcts"
+    model: ModelSettings = field(default_factory=ModelSettings)
     training: TrainingSettings = field(default_factory=TrainingSettings)
     mcts: MCTSSettings = field(default_factory=MCTSSettings)
     grpo: GRPOSettings = field(default_factory=GRPOSettings)
@@ -71,6 +80,9 @@ class AppConfig:
 
         if "algorithm" in data:
             config.algorithm = data["algorithm"]
+
+        if "model" in data:
+            _update_from_dict(config.model, data["model"])
 
         if "training" in data:
             _update_from_dict(config.training, data["training"])

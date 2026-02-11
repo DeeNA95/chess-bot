@@ -423,7 +423,7 @@ def train_loop(config_path: str = "config.yaml"):
     device = get_device()
     logger.info(f'Starting training loop for algorithm: {config.algorithm.upper()} on {device}')
 
-    agent = ChessAgent(device=str(device), lr=config.training.lr)
+    agent = ChessAgent(device=str(device), lr=config.training.lr, model_config=config.model)
     encoder = StateEncoder(device=str(device))
     buffer = ReplayBuffer(capacity=config.training.buffer_capacity)
 

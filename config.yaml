@@ -1,11 +1,19 @@
 # Algorithm Selection: 'mcts', 'grpo', 'ppo', 'ppo_mcts', "grpo_mcts"
 algorithm: "ppo_mcts"
 
+# Model Architecture
+model:
+  embed_dim: 512
+  num_layers: 8
+  num_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.1
+
 # Reward Settings
 rewards:
   stockfish_path: "/usr/games/stockfish"
   stockfish_depth: 12
-  stockfish_hash: 1024
+  stockfish_hash: 128
   num_workers: 16
   stockfish_weight: 0.7
   material_weight: 0.2
@@ -14,17 +22,17 @@ rewards:
 # General Training Settings
 training:
   total_games: 100000
-  batch_size: 8192
-  games_per_update: 8192
+  batch_size: 2048
+  games_per_update: 2048
   lr: 0.0001
   checkpoint_dir: "./checkpoints"
-  buffer_capacity: 1000000
-  num_parallel_games: 1024
-  device: "cuda"  # 'cpu', 'cuda', 'mps' (auto-detected if cleaner)
+  buffer_capacity: 200000
+  num_parallel_games: 256
+  device: "cuda"
 
 # MCTS Specific Settings
 mcts:
-  num_simulations: 2000
+  num_simulations: 800
   c_puct: 1.5
   temperature: 1.0
   dirichlet_alpha: 0.03

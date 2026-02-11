@@ -1,14 +1,22 @@
 import torch
 import torch.amp
 from src.models.transformer_net import ChessTransformerNetV2
-from typing import Dict, Any
+from src.core.config import ModelSettings
+from typing import Dict, Any, Optional
 from ..utils import get_device
 
 class ChessAgent:
-    def __init__(self, device="cpu", lr=5e-5, weight_decay=1e-3):
+    def __init__(self, device="cpu", lr=5e-5, weight_decay=1e-3, model_config: Optional[ModelSettings] = None):
         self.device = get_device()
-        # Use new Transformer Net with 116 planes
-        self.model = ChessTransformerNetV2(num_input_planes=116).to(device)
+        mc = model_config or ModelSettings()
+        self.model = ChessTransformerNetV2(
+            num_input_planes=116,
+            embed_dim=mc.embed_dim,
+            num_layers=mc.num_layers,
+            num_heads=mc.num_heads,
+            mlp_ratio=mc.mlp_ratio,
+            dropout=mc.dropout,
+        ).to(device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
 
         self.scaler = torch.amp.GradScaler('cuda') if device == 'cuda' else None
