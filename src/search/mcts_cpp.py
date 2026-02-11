@@ -136,7 +136,10 @@ class MCTS:
             )
 
             if not all_leaves:
+                print(f"DEBUG: No leaves selected. sims_left={sims_left}")
                 break
+
+            # print(f"DEBUG: Selected {len(all_leaves)} leaves. sims_left={sims_left}")
 
             # Categorize into expand vs verify
             expand_indices = []
