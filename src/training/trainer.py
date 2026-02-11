@@ -909,7 +909,7 @@ def train_loop(config_path: str = "config.yaml"):
 
                     games_played += games_this_round
                 else:
-                    new_samples = play_games_ppo_mcts(agent, mcts, rubric, encoder, config, device)
+                    new_samples = play_games_ppo_mcts_batched(agent, mcts, rubric, encoder, config, device)
             elif config.algorithm == "grpo_mcts":
                 assert mcts is not None
                 assert rubric is not None
