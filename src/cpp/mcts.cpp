@@ -25,6 +25,7 @@ struct Node {
     float value_sum = 0.0f;
     float prior = 0.0f;
     bool is_expanded = false;
+    int virtual_loss = 0;
 
     // Hybrid search fields
     int depth = 0;
@@ -50,13 +51,16 @@ struct Node {
     Node& operator=(const Node&) = delete;
 
     float value() const {
-        return visit_count > 0 ? value_sum / visit_count : 0.0f;
+        int effective_visits = visit_count + virtual_loss;
+        if (effective_visits == 0) return 0.0f;
+        return (value_sum - (float)virtual_loss) / (float)effective_visits;
     }
 
     float ucb_score(float c_puct, int parent_visits) const {
-        if (visit_count == 0) return 10000000.0f;
-        float q_val = value();
-        float u_val = c_puct * prior * std::sqrt((float)parent_visits) / (1.0f + visit_count);
+        int effective_visits = visit_count + virtual_loss;
+        if (effective_visits == 0) return 10000000.0f;
+        float q_val = (value_sum - (float)virtual_loss) / (float)effective_visits;
+        float u_val = c_puct * prior * std::sqrt((float)parent_visits) / (1.0f + effective_visits);
         return q_val + u_val;
     }
 };
@@ -282,7 +286,7 @@ public:
                 }
                 leaf->is_expanded = true;
 
-                // Backpropagate
+                // Backpropagate (also undo virtual loss)
                 Node* node = leaf;
                 while (node != nullptr) {
                     if (node->magic != 0x12345678) {
@@ -291,10 +295,100 @@ public:
                     }
                     node->visit_count++;
                     node->value_sum += val;
+                    if (node->virtual_loss > 0) node->virtual_loss--;
                     val = -val;
                     node = node->parent;
                 }
             }
+        }
+    }
+
+    Node* get_root() { return root_; }
+
+    bool advance_root(int from_sq, int to_sq) {
+        if (!root_ || !root_->is_expanded) return false;
+        chess::Move target = chess::Move::make(
+            chess::Square(from_sq), chess::Square(to_sq));
+        for (Node* child : root_->children) {
+            if (child->move == target) {
+                child->parent = nullptr;
+                child->depth = 0;  // New root gets depth 0 for Dirichlet noise
+                root_ = child;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    Node* select_leaf_vl() {
+        Node* node = root_;
+        if (!node) return nullptr;
+
+        while (node->is_expanded && !node->children.empty()) {
+            // Hijack check
+            if (node->depth > 0 && node->visit_count >= 5 && !node->verified) {
+                node->virtual_loss++;
+                return node;
+            }
+
+            Node* best_child = nullptr;
+            float best_score = -1e9;
+            int parent_effective_visits = node->visit_count + node->virtual_loss;
+
+            for (Node* child : node->children) {
+                if (!child || child->magic != 0x12345678) continue;
+                float score = child->ucb_score(c_puct_, parent_effective_visits);
+                if (score > best_score) {
+                    best_score = score;
+                    best_child = child;
+                }
+            }
+            if (!best_child) break;
+            node->virtual_loss++;
+            node = best_child;
+        }
+        node->virtual_loss++;
+        return node;
+    }
+
+    static void select_leaves_batch_vl(
+        std::vector<MCTS*>& trees,
+        int k,
+        std::vector<Node*>& out_leaves,
+        std::vector<int>& out_tree_indices
+    ) {
+        out_leaves.clear();
+        out_tree_indices.clear();
+        out_leaves.reserve(trees.size() * k);
+        out_tree_indices.reserve(trees.size() * k);
+        for (int t = 0; t < (int)trees.size(); t++) {
+            for (int j = 0; j < k; j++) {
+                Node* leaf = trees[t]->select_leaf_vl();
+                out_leaves.push_back(leaf);
+                out_tree_indices.push_back(t);
+            }
+        }
+    }
+
+    void undo_virtual_loss_and_update(Node* node, float value) {
+        if (!node) return;
+        node->verified = true;
+        Node* cur = node;
+        while (cur != nullptr) {
+            cur->visit_count++;
+            cur->value_sum += value;
+            if (cur->virtual_loss > 0) cur->virtual_loss--;
+            value = -value;
+            cur = cur->parent;
+        }
+    }
+
+    void undo_virtual_loss(Node* node) {
+        if (!node) return;
+        Node* cur = node;
+        while (cur != nullptr) {
+            if (cur->virtual_loss > 0) cur->virtual_loss--;
+            cur = cur->parent;
         }
     }
 

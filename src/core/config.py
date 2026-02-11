@@ -18,6 +18,8 @@ class MCTSSettings:
     temperature: float = 1.0
     dirichlet_alpha: float = 0.03
     dirichlet_epsilon: float = 0.0
+    reuse_tree: bool = True
+    leaves_per_sim: int = 8
 
 @dataclass
 class GRPOSettings:

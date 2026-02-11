@@ -35,7 +35,11 @@ PYBIND11_MODULE(mcts_cpp, m) {
         .def("game_status", &mcts::MCTS::game_status)
         .def("get_root_counts", &mcts::MCTS::get_root_counts)
         .def("get_root_value", &mcts::MCTS::get_root_value)
-        .def("get_root_visits", &mcts::MCTS::get_root_visits);
+        .def("get_root_visits", &mcts::MCTS::get_root_visits)
+        .def("advance_root", &mcts::MCTS::advance_root)
+        .def("get_root", &mcts::MCTS::get_root, py::return_value_policy::reference_internal)
+        .def("undo_virtual_loss_and_update", &mcts::MCTS::undo_virtual_loss_and_update)
+        .def("undo_virtual_loss", &mcts::MCTS::undo_virtual_loss);
 
     m.def("encode_batch", [](std::vector<mcts::Node*> nodes) {
         try {
@@ -95,6 +99,25 @@ PYBIND11_MODULE(mcts_cpp, m) {
             }
         } catch (const std::exception& e) {
             std::cerr << "C++ Exception in expand_batch_fast: " << e.what() << std::endl;
+            throw;
+        }
+    });
+
+    m.def("select_leaves_batch_vl", [](std::vector<mcts::MCTS*> trees, int k) {
+        try {
+            std::vector<mcts::Node*> leaves;
+            std::vector<int> tree_indices;
+            {
+                py::gil_scoped_release release;
+                mcts::MCTS::select_leaves_batch_vl(trees, k, leaves, tree_indices);
+            }
+            py::list leaves_out;
+            for (auto* leaf : leaves) {
+                leaves_out.append(py::cast(leaf, py::return_value_policy::reference));
+            }
+            return py::make_tuple(leaves_out, tree_indices);
+        } catch (const std::exception& e) {
+            std::cerr << "C++ Exception in select_leaves_batch_vl: " << e.what() << std::endl;
             throw;
         }
     });

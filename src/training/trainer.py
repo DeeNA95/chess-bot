@@ -88,13 +88,15 @@ def play_games_mcts(
     game_samples = [[] for _ in range(num_parallel_games)]
     active_indices = list(range(num_parallel_games))
     finished_samples = []
+    last_moves: List[Optional[chess.Move]] = [None] * num_parallel_games
 
     move_count = 0
     while active_indices and move_count < max_moves:
         current_boards = [boards[i] for i in active_indices]
+        current_last_moves = [last_moves[i] for i in active_indices]
 
         # 1. Batched MCTS Search
-        search_results = mcts.search_batch(current_boards)
+        search_results = mcts.search_batch(current_boards, last_moves=current_last_moves)
 
         next_active_indices = []
         for i, idx in enumerate(active_indices):
@@ -117,11 +119,13 @@ def play_games_mcts(
 
             move = _action_to_move(board, action_idx)
             board.push(move)
+            last_moves[idx] = move
 
             # 3. Check for terminal
             if board.is_game_over():
                 _assign_outcomes(game_samples[idx], board)
                 finished_samples.extend(game_samples[idx])
+                last_moves[idx] = None
             else:
                 next_active_indices.append(idx)
 
@@ -215,10 +219,12 @@ def play_games_ppo_mcts(
     samples = [[] for _ in range(num_games)]
     active_indices = list(range(num_games))
     finished_samples = []
+    last_moves: List[Optional[chess.Move]] = [None] * num_games
 
     move_count = 0
     while active_indices and move_count < max_moves:
         current_boards = [boards[i] for i in active_indices]
+        current_last_moves = [last_moves[i] for i in active_indices]
 
         # 1. Batched MCTS Search
         verifier = None
@@ -228,7 +234,7 @@ def play_games_ppo_mcts(
                     verifier = v
                     break
 
-        search_results = mcts.search_batch(current_boards, verifier=verifier)
+        search_results = mcts.search_batch(current_boards, verifier=verifier, last_moves=current_last_moves)
 
         # 2. Process results and calculate rewards
         mcts_moves = []
@@ -271,6 +277,7 @@ def play_games_ppo_mcts(
 
             # Let's push move to get resulting state
             board.push(move)
+            last_moves[idx] = move
 
             batch_boards.append(board)
             batch_moves.append(move)
@@ -324,6 +331,7 @@ def play_games_ppo_mcts(
                 # Mark done
                 samples[idx][-1].done = True
                 finished_samples.extend(samples[idx])
+                last_moves[idx] = None
             else:
                 next_active_indices.append(idx)
 
@@ -436,8 +444,8 @@ def train_loop(config_path: str = "config.yaml"):
     ppo_node: Optional[PPO] = None
     rubric: Optional[ChessRubric] = None
 
-    if config.algorithm == "mcts":
-        mcts = MCTS(
+    def _make_mcts():
+        return MCTS(
             model=agent.model,
             encoder=encoder,
             device=str(device),
@@ -446,35 +454,22 @@ def train_loop(config_path: str = "config.yaml"):
             temperature=config.mcts.temperature,
             dirichlet_alpha=config.mcts.dirichlet_alpha,
             dirichlet_epsilon=config.mcts.dirichlet_epsilon,
+            reuse_tree=config.mcts.reuse_tree,
+            leaves_per_sim=config.mcts.leaves_per_sim,
         )
+
+    if config.algorithm == "mcts":
+        mcts = _make_mcts()
     elif config.algorithm == "grpo":
         grpo_node = GRPO(config, agent.model)
     elif config.algorithm == "ppo":
         ppo_node = PPO(config, agent.model)
     elif config.algorithm == "ppo_mcts":
         ppo_node = PPO(config, agent.model)
-        mcts = MCTS(
-            model=agent.model,
-            encoder=encoder,
-            device=str(device),
-            num_simulations=config.mcts.num_simulations,
-            c_puct=config.mcts.c_puct,
-            temperature=config.mcts.temperature,
-            dirichlet_alpha=config.mcts.dirichlet_alpha,
-            dirichlet_epsilon=config.mcts.dirichlet_epsilon,
-        )
+        mcts = _make_mcts()
     elif config.algorithm == "grpo_mcts":
         grpo_node = GRPO(config, agent.model)
-        mcts = MCTS(
-            model=agent.model,
-            encoder=encoder,
-            device=str(device),
-            num_simulations=config.mcts.num_simulations,
-            c_puct=config.mcts.c_puct,
-            temperature=config.mcts.temperature,
-            dirichlet_alpha=config.mcts.dirichlet_alpha,
-            dirichlet_epsilon=config.mcts.dirichlet_epsilon,
-        )
+        mcts = _make_mcts()
     # Rubric Setup for PPO-MCTS or GRPO-MCTS
     rubric = None
     if config.algorithm in ["ppo_mcts", "grpo_mcts"]:
@@ -689,6 +684,7 @@ def play_games_grpo_mcts(
     num_games = config.training.num_parallel_games
     boards = [chess.Board() for _ in range(num_games)]
     active_indices = list(range(num_games))
+    last_moves: List[Optional[chess.Move]] = [None] * num_games
 
     # We collect all samples from all games
     all_samples = []
@@ -699,6 +695,7 @@ def play_games_grpo_mcts(
     move_count = 0
     while active_indices and move_count < max_moves:
         current_boards = [boards[i] for i in active_indices]
+        current_last_moves = [last_moves[i] for i in active_indices]
 
         # 1. Batched MCTS Search
         verifier = None
@@ -708,7 +705,7 @@ def play_games_grpo_mcts(
                     verifier = v
                     break
 
-        search_results = mcts.search_batch(current_boards, verifier=verifier)
+        search_results = mcts.search_batch(current_boards, verifier=verifier, last_moves=current_last_moves)
 
         # 2. Generate Group Samples
         batch_boards_for_eval = [] # Size: N_active * G
@@ -821,9 +818,12 @@ def play_games_grpo_mcts(
             action_idx = next_moves_for_sim[i]
             move = _action_to_move(board, action_idx)
             board.push(move)
+            last_moves[idx] = move
 
             if not board.is_game_over():
                 next_active_indices.append(idx)
+            else:
+                last_moves[idx] = None
 
         active_indices = next_active_indices
         move_count += 1
