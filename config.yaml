@@ -35,6 +35,7 @@ self_play:
   num_workers: 64
   games_per_worker: 4
   max_moves: 100
+  flush_every_moves: 10
   sync_weights_every: 1
 
 # MCTS Specific Settings

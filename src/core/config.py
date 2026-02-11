@@ -64,6 +64,7 @@ class SelfPlaySettings:
     num_workers: int = 0
     games_per_worker: int = 4
     max_moves: int = 100
+    flush_every_moves: int = 10
     sync_weights_every: int = 1
 
 @dataclass
