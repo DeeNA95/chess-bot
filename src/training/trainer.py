@@ -747,7 +747,7 @@ def train_loop(config_path: str = "config.yaml"):
                             "type": "play",
                             "num_games": config.self_play.games_per_worker,
                             "max_moves": config.self_play.max_moves,
-                            "flush_every_moves": config.self_play.flush_every_moves,
+                            "flush_every_moves": getattr(config.self_play, "flush_every_moves", 0),
                         })
 
                     steps = []
