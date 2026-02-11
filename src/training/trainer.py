@@ -817,7 +817,10 @@ def train_loop(config_path: str = "config.yaml"):
 
             # 2. Training Updates
             if len(buffer) >= config.training.batch_size:
-                games_per_round = games_this_round if use_self_play_workers else config.training.num_parallel_games
+                if use_self_play_workers:
+                    games_per_round = games_this_round if games_this_round > 0 else config.training.num_parallel_games
+                else:
+                    games_per_round = config.training.num_parallel_games
                 updates_to_run = max(1, config.training.games_per_update // games_per_round)
 
                 total_metrics = {}
