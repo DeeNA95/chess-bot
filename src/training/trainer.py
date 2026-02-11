@@ -147,13 +147,8 @@ def _self_play_worker(
                 board = boards[idx]
                 policy, value = search_results[i]
 
-                if mcts.temperature > 0:
-                    action_idx = int(torch.multinomial(policy, 1).item())
-                else:
-                    action_idx = int(policy.argmax().item())
-
+                action_idx, mcts_log_prob = _sample_action_from_policy(board, policy, mcts.temperature)
                 move = _action_to_move(board, action_idx)
-                mcts_log_prob = float(torch.log(policy[action_idx] + 1e-8).item())
 
                 captured_piece = None
                 if board.is_capture(move):
@@ -296,8 +291,17 @@ def play_games_grpo(
             probs = torch.softmax(logits, dim=-1)
 
             # Sample group_size actions for this SAME state
-            actions = torch.multinomial(probs, group_size, replacement=True).squeeze(0)
-            log_probs = torch.log(probs.gather(1, actions.unsqueeze(0))).squeeze(0)
+            total = float(probs.sum().item())
+            if not torch.isfinite(probs).all() or total <= 0.0:
+                legal_moves = list(start_board.legal_moves)
+                actions = torch.tensor(
+                    [_move_to_action_idx(random.choice(legal_moves)) for _ in range(group_size)],
+                    dtype=torch.long,
+                )
+                log_probs = torch.zeros(group_size)
+            else:
+                actions = torch.multinomial(probs, group_size, replacement=True).squeeze(0)
+                log_probs = torch.log(probs.gather(1, actions.unsqueeze(0))).squeeze(0)
 
         group_rewards = []
         for i in range(group_size):
@@ -377,13 +381,8 @@ def play_games_ppo_mcts(
 
             # Sample action from MCTS policy (NOT the raw network)
             # This makes MCTS the "behavior policy"
-            if mcts.temperature > 0:
-                action_idx = int(torch.multinomial(policy, 1).item())
-            else:
-                action_idx = int(policy.argmax().item())
-
+            action_idx, mcts_log_prob = _sample_action_from_policy(board, policy, mcts.temperature)
             move = _action_to_move(board, action_idx)
-            mcts_log_prob = float(torch.log(policy[action_idx] + 1e-8).item())
 
             # Need to check for captures BEFORE pushing for MaterialVerifier
             captured_piece = None
@@ -504,6 +503,31 @@ def _action_to_move(board: chess.Board, action_idx: int) -> chess.Move:
         if piece and piece.piece_type == chess.PAWN:
             move.promotion = chess.QUEEN
     return move
+
+def _move_to_action_idx(move: chess.Move) -> int:
+    return move.from_square * 64 + move.to_square
+
+def _sample_action_from_policy(board: chess.Board, policy: torch.Tensor, temperature: float) -> Tuple[int, float]:
+    """Sample an action index and log-prob from a policy tensor with safety checks."""
+    if policy is None or policy.numel() == 0:
+        legal_moves = list(board.legal_moves)
+        move = random.choice(legal_moves)
+        return _move_to_action_idx(move), 0.0
+
+    policy = policy.float().cpu()
+    total = float(policy.sum().item())
+    if not torch.isfinite(policy).all() or total <= 0.0:
+        legal_moves = list(board.legal_moves)
+        move = random.choice(legal_moves)
+        return _move_to_action_idx(move), 0.0
+
+    if temperature > 0:
+        action_idx = int(torch.multinomial(policy, 1).item())
+    else:
+        action_idx = int(policy.argmax().item())
+
+    log_prob = float(torch.log(policy[action_idx] + 1e-8).item())
+    return action_idx, log_prob
 
 
 def _assign_outcomes(samples: List[GameSample], board: chess.Board, timeout: bool = False):
@@ -959,11 +983,18 @@ def play_games_grpo_mcts(
             # If temperature is low, we might get duplicates. GRPO handles this.
 
             # policy is [4096]
-            # normalize to be sure
-            probs = policy / policy.sum()
-
-            # Sample G actions with replacement
-            actions = torch.multinomial(probs, group_size, replacement=True)
+            total = float(policy.sum().item())
+            if not torch.isfinite(policy).all() or total <= 0.0:
+                legal_moves = list(board.legal_moves)
+                actions = torch.tensor(
+                    [_move_to_action_idx(random.choice(legal_moves)) for _ in range(group_size)],
+                    dtype=torch.long,
+                )
+                probs = None
+            else:
+                probs = policy / total
+                # Sample G actions with replacement
+                actions = torch.multinomial(probs, group_size, replacement=True)
 
             # Log probs of these actions under the MCTS policy
             # Note: GRPO often uses the "Old Policy" (Network) log probs here for ratio.
@@ -977,7 +1008,10 @@ def play_games_grpo_mcts(
             # Let's effectively treat MCTS probability as the "old_log_prob"
             # so ratio = pi_theta / pi_MCTS.
             # This encourages pi_theta to match MCTS where advantage is positive.
-            log_probs = torch.log(probs.gather(0, actions) + 1e-10)
+            if probs is None:
+                log_probs = torch.zeros(group_size)
+            else:
+                log_probs = torch.log(probs.gather(0, actions) + 1e-10)
 
             # Select move to actually play (e.g. the first sample, or argmax)
             # Let's pick the first sample to keep diversity, or argmax for strong play?
