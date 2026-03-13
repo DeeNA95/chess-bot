@@ -86,8 +86,8 @@ PYBIND11_MODULE(mcts_cpp, m) {
             int batch_size = leaves.size();
 
             // Validate input sizes
-            if (policy_buf.size < batch_size * 4096) {
-                 std::cerr << "FATAL: Policy buffer too small! Expected " << batch_size * 4096 << ", got " << policy_buf.size << std::endl;
+            if (policy_buf.size < batch_size * 4672) {
+                 std::cerr << "FATAL: Policy buffer too small! Expected " << batch_size * 4672 << ", got " << policy_buf.size << std::endl;
                  return;
             }
             if (values_buf.size < batch_size) {

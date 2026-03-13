@@ -1,5 +1,5 @@
 import torch
-import torch.amp
+from torch.amp import GradScaler, autocast
 from src.models.transformer_net import ChessTransformerNetV2
 from src.core.config import ModelSettings
 from typing import Dict, Any, Optional
@@ -19,7 +19,7 @@ class ChessAgent:
         ).to(device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
 
-        self.scaler = torch.amp.GradScaler('cuda') if device == 'cuda' else None
+        self.scaler = GradScaler('cuda') if device == 'cuda' else None
 
         # LR Scheduler
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
@@ -38,7 +38,7 @@ class ChessAgent:
         mask = observation['action_mask'].unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            with torch.cuda.amp.autocast(enabled=(self.device == 'cuda')):
+            with autocast('cuda',enabled=(self.device == 'cuda')):
                 logits, _ = self.model(obs)
                 logits[~mask] = -float('inf')
                 probs = torch.softmax(logits, dim=-1)
@@ -46,9 +46,6 @@ class ChessAgent:
                     return int(torch.argmax(probs).item())
                 return int(torch.distributions.Categorical(probs).sample().item())
 
-    def train_step(self, batch: Any) -> Dict[str, float]:
-        """Legacy PPO train_step - not used in AlphaZero loop."""
-        return {}
 
     def save(self, path: str):
         torch.save(self.model.state_dict(), path)

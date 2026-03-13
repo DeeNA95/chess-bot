@@ -16,6 +16,86 @@
 
 #include "chess.hpp"
 
+// ===== AlphaZero Action Encoding (4672 = 73 move types × 64 squares) =====
+static constexpr int ACTION_SPACE_SIZE = 4672;
+static constexpr int NUM_MOVE_TYPES = 73;
+static constexpr int NUM_SQUARES_AZ = 64;
+
+// 8 compass directions: N, NE, E, SE, S, SW, W, NW
+static const int AZ_DIRECTIONS[8][2] = {
+    {1, 0}, {1, 1}, {0, 1}, {-1, 1},
+    {-1, 0}, {-1, -1}, {0, -1}, {1, -1},
+};
+
+// 8 knight moves
+static const int AZ_KNIGHT_MOVES[8][2] = {
+    {2, 1}, {2, -1}, {-2, 1}, {-2, -1},
+    {1, 2}, {1, -2}, {-1, 2}, {-1, -2},
+};
+
+// Underpromotion directions (delta_file)
+static const int AZ_UNDERPROMO_DIRS[3] = {-1, 0, 1};
+
+static inline int az_flip_square(int sq) {
+    int r = sq / 8, f = sq % 8;
+    return (7 - r) * 8 + (7 - f);
+}
+
+// Encode a chess::Move into an AlphaZero action index [0, 4672)
+static int move_to_action_idx(const chess::Move& move, chess::Color perspective) {
+    int from_sq = move.from().index();
+    int to_sq = move.to().index();
+
+    if (perspective == chess::Color::BLACK) {
+        from_sq = az_flip_square(from_sq);
+        to_sq = az_flip_square(to_sq);
+    }
+
+    int from_rank = from_sq / 8, from_file = from_sq % 8;
+    int to_rank = to_sq / 8, to_file = to_sq % 8;
+    int dr = to_rank - from_rank;
+    int df = to_file - from_file;
+
+    // Underpromotions (knight, bishop, rook)
+    if (move.typeOf() == chess::Move::PROMOTION) {
+        auto pt = move.promotionType();
+        if (pt != chess::PieceType::underlying::QUEEN) {
+            int piece_idx = -1;
+            if (pt == chess::PieceType::underlying::KNIGHT) piece_idx = 0;
+            else if (pt == chess::PieceType::underlying::BISHOP) piece_idx = 1;
+            else if (pt == chess::PieceType::underlying::ROOK) piece_idx = 2;
+
+            int dir_idx = df + 1; // -1->0, 0->1, 1->2
+            if (piece_idx >= 0 && dir_idx >= 0 && dir_idx < 3) {
+                int move_type = 64 + piece_idx * 3 + dir_idx;
+                return move_type * NUM_SQUARES_AZ + from_sq;
+            }
+        }
+    }
+
+    // Knight moves
+    for (int i = 0; i < 8; ++i) {
+        if (AZ_KNIGHT_MOVES[i][0] == dr && AZ_KNIGHT_MOVES[i][1] == df) {
+            return (56 + i) * NUM_SQUARES_AZ + from_sq;
+        }
+    }
+
+    // Queen-type moves (includes queen promotions)
+    int norm_dr = (dr > 0) ? 1 : (dr < 0) ? -1 : 0;
+    int norm_df = (df > 0) ? 1 : (df < 0) ? -1 : 0;
+    int distance = std::max(std::abs(dr), std::abs(df));
+
+    for (int i = 0; i < 8; ++i) {
+        if (AZ_DIRECTIONS[i][0] == norm_dr && AZ_DIRECTIONS[i][1] == norm_df) {
+            int move_type = i * 7 + (distance - 1);
+            return move_type * NUM_SQUARES_AZ + from_sq;
+        }
+    }
+
+    return 0; // fallback
+}
+// ===== End AlphaZero Action Encoding =====
+
 namespace mcts {
 
 // ============================================================================
@@ -206,9 +286,7 @@ public:
 
         int move_idx = 0;
         for (const auto& move : moves) {
-            int from = move.from().index();
-            int to = move.to().index();
-            int action_idx = from * 64 + to;
+            int action_idx = move_to_action_idx(move, board.sideToMove());
 
             float prior = 0.0f;
             if (action_idx < (int)policy_probs.size()) {
@@ -257,7 +335,7 @@ public:
         for (int i = 0; i < batch_size; ++i) {
             Node* leaf = leaves[i];
             float val = values[i];
-            const float* leaf_policy = policy_data + (i * 4096);
+            const float* leaf_policy = policy_data + (i * ACTION_SPACE_SIZE);
             MCTS* tree = trees[i];
 
             if (leaf && !leaf->is_expanded) {
@@ -278,12 +356,10 @@ public:
 
                 int move_idx = 0;
                 for (const auto& move : moves) {
-                    int from = move.from().index();
-                    int to = move.to().index();
-                    int action_idx = from * 64 + to;
+                    int action_idx = move_to_action_idx(move, board.sideToMove());
 
                     float prior = 0.0f;
-                    if (action_idx < 4096) {
+                    if (action_idx < ACTION_SPACE_SIZE) {
                         prior = leaf_policy[action_idx];
                     }
                     if (apply_dirichlet) {
@@ -465,9 +541,7 @@ public:
                 std::cerr << "FATAL: get_root_counts child corrupted" << std::endl;
                 continue;
             }
-            int from = child->move.from().index();
-            int to = child->move.to().index();
-            int idx = from * 64 + to;
+            int idx = move_to_action_idx(child->move, root_->board.sideToMove());
             counts.push_back({idx, child->visit_count});
         }
         return counts;
@@ -555,9 +629,9 @@ void encode_single_node(Node* node, float* data, int batch_idx, int max_size) {
     // 1. History
     Node* current = node;
     for (int t = 0; t < 8; ++t) {
-        if (!current) break;
-        if (current->magic != 0x12345678) {
-            std::cerr << "FATAL: History traversal corrupted at depth " << t << std::endl;
+        if (!current || current->magic != 0x12345678) {
+            // If current is null or corrupted, stop traversal
+            // (shouldn't happen, but safety check)
             break;
         }
 
@@ -574,7 +648,11 @@ void encode_single_node(Node* node, float* data, int batch_idx, int max_size) {
             fill_plane(data, batch_idx, base_plane + 6 + pt, bb, perspective, max_size);
         }
 
-        current = current->parent;
+        // Duplicate earliest position instead of leaving zeros
+        if (current->parent) {
+            current = current->parent;
+        }
+        // else: keep encoding same board for remaining slots
     }
 
     // 2. Metadata
@@ -609,6 +687,54 @@ void encode_single_node(Node* node, float* data, int batch_idx, int max_size) {
         for (int i = 0; i < 64; ++i) {
             int idx = batch_idx * total_features + p_idx * 64 + i;
             if (idx < max_size) data[idx] = 1.0f;
+        }
+    }
+
+    // 3. Attack/Defense Maps (planes 104-115)
+    int attack_base = 104;
+    auto occ = b.occ();
+    auto my_color = static_cast<chess::Color::underlying>(perspective);
+    auto enemy_color = static_cast<chess::Color::underlying>(1 - perspective);
+
+    // Helper to get attacks for a piece type at a given square
+    auto get_attacks = [&](int pt, chess::Square sq, chess::Color color) -> uint64_t {
+        using PT = chess::PieceType::underlying;
+        switch (static_cast<PT>(pt)) {
+            case PT::PAWN:   return chess::attacks::pawn(color, sq).getBits();
+            case PT::KNIGHT: return chess::attacks::knight(sq).getBits();
+            case PT::BISHOP: return chess::attacks::bishop(sq, occ).getBits();
+            case PT::ROOK:   return chess::attacks::rook(sq, occ).getBits();
+            case PT::QUEEN:  return chess::attacks::queen(sq, occ).getBits();
+            case PT::KING:   return chess::attacks::king(sq).getBits();
+            default:         return 0;
+        }
+    };
+
+    // My attacks (6 planes: attack_base + 0..5)
+    for (int pt = 0; pt < 6; ++pt) {
+        uint64_t pieces_bb = b.pieces(static_cast<chess::PieceType::underlying>(pt), my_color).getBits();
+        uint64_t combined_attacks = 0;
+        while (pieces_bb) {
+            int sq = __builtin_ctzll(pieces_bb);
+            combined_attacks |= get_attacks(pt, chess::Square(sq), chess::Color(my_color));
+            pieces_bb &= pieces_bb - 1;
+        }
+        if (combined_attacks) {
+            fill_plane(data, batch_idx, attack_base + pt, combined_attacks, perspective, max_size);
+        }
+    }
+
+    // Enemy attacks (6 planes: attack_base + 6..11)
+    for (int pt = 0; pt < 6; ++pt) {
+        uint64_t pieces_bb = b.pieces(static_cast<chess::PieceType::underlying>(pt), enemy_color).getBits();
+        uint64_t combined_attacks = 0;
+        while (pieces_bb) {
+            int sq = __builtin_ctzll(pieces_bb);
+            combined_attacks |= get_attacks(pt, chess::Square(sq), chess::Color(enemy_color));
+            pieces_bb &= pieces_bb - 1;
+        }
+        if (combined_attacks) {
+            fill_plane(data, batch_idx, attack_base + 6 + pt, combined_attacks, perspective, max_size);
         }
     }
 }

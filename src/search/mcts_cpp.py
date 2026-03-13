@@ -235,7 +235,7 @@ class MCTS:
         results = []
         for tree in active_trees:
             counts = tree.get_root_counts()
-            policy = torch.zeros(4096, dtype=torch.float32, device=self.device)
+            policy = torch.zeros(4672, dtype=torch.float32, device=self.device)
             for idx, count in counts:
                 policy[idx] = count
 

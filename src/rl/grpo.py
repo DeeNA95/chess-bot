@@ -83,7 +83,7 @@ class GRPO:
         log_probs_all = F.log_softmax(logits, dim=-1)
 
         # Gather log_probs for the specific actions taken
-        # actions: [B], log_probs_all: [B, 4096]
+        # actions: [B], log_probs_all: [B, 4672]
         new_log_probs = log_probs_all.gather(1, actions.unsqueeze(1)).squeeze(1)
 
         # 3. KL Divergence with Reference Model

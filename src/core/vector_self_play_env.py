@@ -22,7 +22,7 @@ class VectorSelfPlayEnv:
 
         # Mirror single env properties
         self.observation_space_shape = (116, 8, 8)
-        self.action_mask_shape = (4096,)
+        self.action_mask_shape = (4672,)
 
     def reset(self) -> Tuple[Dict[str, torch.Tensor], List[Dict[str, Any]]]:
         """Reset all environments and return initial observations."""

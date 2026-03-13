@@ -29,7 +29,7 @@ class _ChessTransformerBase(nn.Module):
         num_heads: int = 8,
         mlp_ratio: float = 4.0,
         dropout: float = 0.1,
-        action_space: int = 4096
+        action_space: int = 4672
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -121,18 +121,18 @@ class ChessTransformerNet(_ChessTransformerBase):
     '''
     Hybrid CNN + Transformer with flat linear policy head.
 
-    Policy: flatten all 64 square embeddings → linear → 4096 logits.
+    Policy: flatten all 64 square embeddings → linear → 4672 logits.
     '''
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.policy_head = nn.Linear(self.embed_dim * self.num_squares, 4096)
+        self.policy_head = nn.Linear(self.embed_dim * self.num_squares, 4672)
         self._init_weights()
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         features = self.encode(x)
 
-        policy_logits = self.policy_head(features.flatten(1))  # (B, 4096)
+        policy_logits = self.policy_head(features.flatten(1))  # (B, 4672)
 
         value = self.value_head(features.mean(dim=1))  # (B, 1)
 
@@ -144,7 +144,7 @@ class ChessTransformerNetV2(_ChessTransformerBase):
     Hybrid CNN + Transformer with from-to attention policy head.
 
     Policy is computed as attention between from-squares and to-squares,
-    giving more structured inductive bias for move prediction.
+    then projected from 4096 to 4672 to handle underpromotion move types.
     '''
 
     def __init__(self, *args, **kwargs):
@@ -152,16 +152,19 @@ class ChessTransformerNetV2(_ChessTransformerBase):
         self.from_query = nn.Linear(self.embed_dim, self.embed_dim)
         self.to_key = nn.Linear(self.embed_dim, self.embed_dim)
         self.policy_scale = self.embed_dim ** -0.5
+        # Project from-to attention (4096) to AlphaZero action space (4672)
+        self.policy_proj = nn.Linear(4096, 4672)
         self._init_weights()
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         features = self.encode(x)
 
-        # Policy: from-to attention
+        # Policy: from-to attention → project to full action space
         from_q = self.from_query(features)  # (B, 64, embed_dim)
         to_k = self.to_key(features)  # (B, 64, embed_dim)
-        policy_logits = torch.bmm(from_q, to_k.transpose(1, 2)) * self.policy_scale
-        policy_logits = policy_logits.flatten(1)  # (B, 4096)
+        attn_logits = torch.bmm(from_q, to_k.transpose(1, 2)) * self.policy_scale
+        attn_logits = attn_logits.flatten(1)  # (B, 4096)
+        policy_logits = self.policy_proj(attn_logits)  # (B, 4672)
 
         value = self.value_head(features.mean(dim=1))  # (B, 1)
 

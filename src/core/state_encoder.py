@@ -22,9 +22,8 @@ class StateEncoder:
     def __init__(self, device="cpu"):
         self.history_len = 8
         self.planes_per_step = 12
-        # History (96) + Metadata (8) + Attacks (12 - Unused/Zeros) = 116
+        # History (96) + Metadata (8) + Attack/Defense (12) = 116
         self.num_planes = (self.history_len * self.planes_per_step) + 8 + 12
-        self.planes_per_step = 12
         self.shape = (self.num_planes, 8, 8)
         self.device = str(device)
 
@@ -33,6 +32,7 @@ class StateEncoder:
         """
         Efficiently encodes state from MCTS node by traversing parents.
         Avoids board copying/popping by using the tree structure for history.
+        When history runs out, duplicates the earliest available position.
         """
         state = torch.zeros(self.shape, dtype=torch.float32, device=self.device)
         me = node.board.turn
@@ -41,17 +41,18 @@ class StateEncoder:
         current = node
         for t in range(self.history_len):
             base_idx = t * 12
-            if current:
-                self._encode_pieces(current.board, state, base_idx, me)
+            self._encode_pieces(current.board, state, base_idx, me)
+            if current.parent is not None:
                 current = current.parent
-            else:
-                break
+            # else: keep encoding same board for remaining slots
 
         # 2. Metadata Planes
         metadata_idx = self.history_len * self.planes_per_step
         self._encode_metadata(node.board, state, metadata_idx, me)
 
-        # 3. Attack/Defense Maps (Disabled for speed, planes kept as zeros)
+        # 3. Attack/Defense Maps
+        attack_idx = metadata_idx + 8
+        self._encode_attack_defense(node.board, state, attack_idx, me)
 
         return state
 
@@ -68,18 +69,17 @@ class StateEncoder:
             base_idx = t * 12
             self._encode_pieces(path_board, state, base_idx, me)
 
-            if t < self.history_len - 1:
-                if path_board.move_stack:
-                    path_board.pop()
-                else:
-                    break
+            if t < self.history_len - 1 and path_board.move_stack:
+                path_board.pop()
+            # else: keep encoding same board for remaining slots
 
         # 2. Metadata Planes
-        # Start after history planes
         metadata_idx = self.history_len * self.planes_per_step
         self._encode_metadata(board, state, metadata_idx, me)
 
-
+        # 3. Attack/Defense Maps
+        attack_idx = metadata_idx + 8
+        self._encode_attack_defense(board, state, attack_idx, me)
 
         return state
 
@@ -139,30 +139,53 @@ class StateEncoder:
         if perspective == chess.BLACK:
             state[base_idx+7, :, :] = 1.0
 
+    def _bitboard_to_plane(self, bb: int, perspective) -> np.ndarray:
+        """Convert an integer bitboard to an 8x8 numpy array with perspective flip."""
+        # Convert 64-bit integer to 8 bytes, big-endian for MSB-first unpack
+        # chess bitboards: bit 0 = a1, bit 63 = h8
+        # np.unpackbits with big-endian byte order gives us MSB first,
+        # so we reverse the byte order to get LSB-first (a1 first)
+        bb_bytes = bb.to_bytes(8, byteorder='little')
+        bits = np.unpackbits(np.frombuffer(bb_bytes, dtype=np.uint8))
+        # Now bits[0] = bit 0 of first byte = a1, bits[7] = h1, etc.
+        plane = bits.reshape(8, 8).astype(np.float32)
+        if perspective == chess.BLACK:
+            plane = plane[::-1, ::-1].copy()
+        return plane
 
+    def _encode_attack_defense(self, board, state, base_idx, perspective):
+        """Encode 12 attack/defense planes using bitboard OR + numpy conversion.
 
-    def _fill_plane_from_bitboard(self, state, plane_idx, bitboard, perspective):
-        """Helper to fill a tensor plane from an integer bitboard."""
-        while bitboard:
-            sq = bitboard & -bitboard # LS1B
-            r, c = chess.square_rank(sq.bit_length() - 1), chess.square_file(sq.bit_length() - 1)
-            if perspective == chess.BLACK:
-                r, c = 7 - r, 7 - c
-            state[plane_idx, r, c] = 1.0
-            bitboard &= bitboard - 1
+        Planes base_idx+0..5:  Squares attacked by my [P,N,B,R,Q,K]
+        Planes base_idx+6..11: Squares attacked by enemy [P,N,B,R,Q,K]
+        """
+        me = perspective
+        enemy = not me
+
+        # My attacks (6 planes)
+        for i, piece_type in enumerate(PIECE_TYPES):
+            combined_attacks = 0
+            for sq in board.pieces(piece_type, me):
+                combined_attacks |= board.attacks_mask(sq)
+            if combined_attacks:
+                plane = self._bitboard_to_plane(combined_attacks, perspective)
+                state[base_idx + i] = torch.from_numpy(plane)
+
+        # Enemy attacks (6 planes)
+        for i, piece_type in enumerate(PIECE_TYPES):
+            combined_attacks = 0
+            for sq in board.pieces(piece_type, enemy):
+                combined_attacks |= board.attacks_mask(sq)
+            if combined_attacks:
+                plane = self._bitboard_to_plane(combined_attacks, perspective)
+                state[base_idx + 6 + i] = torch.from_numpy(plane)
 
     def get_action_mask(self, board: chess.Board) -> torch.Tensor:
         """
         Computes the action mask for a given board state.
-        Returns a boolean tensor of shape (4096,).
+        Returns a boolean tensor of shape (4672,) using AlphaZero action encoding.
         """
-        mask = torch.zeros(4096, dtype=torch.bool, device=self.device)
-        valid_indices = [
-            move.from_square * 64 + move.to_square
-            for move in board.legal_moves
-            if not move.promotion or move.promotion == chess.QUEEN
-        ]
-        if valid_indices:
-            mask[valid_indices] = True
-        return mask
+        from src.core.action_encoding import get_action_mask
+        return get_action_mask(board, device=self.device)
+
 

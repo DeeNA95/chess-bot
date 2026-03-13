@@ -7,7 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.rl.ppo import PPO
 from src.core.config import AppConfig
-from src.agents.ppo_agent import ChessAgent
+from src.agents.chess_agent import ChessAgent
 from src.core.state_encoder import StateEncoder
 
 def test_ppo_step():

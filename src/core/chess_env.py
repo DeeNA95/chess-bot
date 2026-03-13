@@ -2,6 +2,7 @@ import gymnasium as gym
 import chess
 import numpy as np
 from src.core.state_encoder import StateEncoder
+from src.core.action_encoding import action_to_move, get_action_mask, ACTION_SPACE_SIZE
 from typing import Optional, Tuple, Dict, Any, TypeAlias
 import torch
 from src.utils import get_device
@@ -17,10 +18,10 @@ class ChessEnv(gym.Env):
     Observation Space:
         Dict:
             'observation': (20, 8, 8) float32 tensor (Canonical Board)
-            'action_mask': (4096,) bool array (Legal moves mask)
+            'action_mask': (4672,) bool array (Legal moves mask)
 
     Action Space:
-        Discrete(4096) representing (from_square * 64 + to_square).
+        Discrete(4672) representing AlphaZero-encoded action index.
         Simplification: Always promotes to Queen.
     """
 
@@ -32,12 +33,12 @@ class ChessEnv(gym.Env):
         self.device = device if device is not None else get_device()
         self.encoder = StateEncoder(device=self.device)
 
-        # 64 * 64 = 4096 possible from-to combinations
-        self.action_space = gym.spaces.Discrete(4096)
+        # 73 move types x 64 from-squares = 4672 AlphaZero action space
+        self.action_space = gym.spaces.Discrete(ACTION_SPACE_SIZE)
 
         self.observation_space = gym.spaces.Dict({
             "observation": gym.spaces.Box(low=0, high=1, shape=(116, 8, 8), dtype=np.float32),
-            "action_mask": gym.spaces.Box(low=0, high=1, shape=(4096,), dtype=np.int8)
+            "action_mask": gym.spaces.Box(low=0, high=1, shape=(ACTION_SPACE_SIZE,), dtype=np.int8)
         })
 
         self.board = chess.Board()
@@ -50,18 +51,7 @@ class ChessEnv(gym.Env):
         return self._get_obs(), self._get_info()
 
     def step(self, action):
-        # Decode action
-        from_sq = action // 64
-        to_sq = action % 64
-
-        move = chess.Move(from_sq, to_sq)
-
-        # Check for promotion (simplification: always Queen)
-        # If pawn moving to rank 0 or 7
-        piece = self.board.piece_at(from_sq)
-        if piece and piece.piece_type == chess.PAWN:
-            if chess.square_rank(to_sq) in [0, 7]:
-                move.promotion = chess.QUEEN
+        move = action_to_move(action, self.board)
 
         # Verify legality
         if move not in self.board.legal_moves:
@@ -99,7 +89,7 @@ class ChessEnv(gym.Env):
         obs_tensor = self.encoder.encode(self.board)
 
         # Get action mask (Torch Tensor) from encoder
-        mask = self.encoder.get_action_mask(self.board)
+        mask = get_action_mask(self.board, device=self.device)
 
         return {
             "observation": obs_tensor,

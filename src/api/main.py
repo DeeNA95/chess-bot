@@ -101,21 +101,14 @@ async def predict_move(req: MoveRequest):
     results = current_mcts.search_batch([board])
     policy, value = results[0]  # (tensor, float)
 
+    from src.core.action_encoding import action_to_move, move_to_action
+
     # Select best move from policy (robust child / max visits)
-    # policy is a tensor of shape (4096,) containing probabilities
+    # policy is a tensor of shape (4672,) containing probabilities
     best_action_idx = torch.argmax(policy).item()
 
-    # Decode action to move
-    from_sq = int(best_action_idx // 64)
-    to_sq = int(best_action_idx % 64)
-    move = chess.Move(from_sq, to_sq)
-
-    # Handle promotions (AlphaZero simplified encoding usually implies Queen)
-    # Check if this move is a promotion candidate
-    if chess.square_rank(to_sq) in [0, 7]:
-        piece = board.piece_at(from_sq)
-        if piece and piece.piece_type == chess.PAWN:
-            move.promotion = chess.QUEEN
+    # Decode action to move using AlphaZero encoding
+    move = action_to_move(int(best_action_idx), board)
 
     # Verify legality (just in case)
     if move not in board.legal_moves:
@@ -127,7 +120,7 @@ async def predict_move(req: MoveRequest):
 
         for m in legal_moves:
             # Map move to action idx
-            idx = m.from_square * 64 + m.to_square
+            idx = move_to_action(m, board.turn)
             prob = policy[idx].item()
             if prob > best_prob:
                 best_prob = prob
@@ -135,7 +128,7 @@ async def predict_move(req: MoveRequest):
 
         if best_legal_move:
             move = best_legal_move
-            print(f"⚠️ MCTS selected illegal move {chess.Move(from_sq, to_sq)}, fell back to {move}")
+            print(f"⚠️ MCTS selected illegal move, fell back to {move}")
         else:
              # Should never happen
              move = legal_moves[0]

@@ -3,7 +3,7 @@ import torch
 import chess
 from src.core.config import AppConfig
 from src.core.state_encoder import StateEncoder
-from src.agents.ppo_agent import ChessAgent
+from src.agents.chess_agent import ChessAgent
 from src.search.mcts import MCTS
 from src.training.verifiers import ChessRubric
 from src.training.async_verifier import AsyncStockfishVerifier

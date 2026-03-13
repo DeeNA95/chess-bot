@@ -2,6 +2,7 @@ import gymnasium as gym
 import chess
 import numpy as np
 from src.core.state_encoder import StateEncoder
+from src.core.action_encoding import action_to_move, get_action_mask, ACTION_SPACE_SIZE
 from typing import Optional, Tuple, Dict, Any, TypeAlias
 import torch
 from src.utils import get_device
@@ -27,10 +28,10 @@ class SelfPlayChessEnv(gym.Env):
         self.device = device if device is not None else get_device()
         self.encoder = StateEncoder(device=self.device)
 
-        self.action_space = gym.spaces.Discrete(4096)
+        self.action_space = gym.spaces.Discrete(ACTION_SPACE_SIZE)
         self.observation_space = gym.spaces.Dict({
             'observation': gym.spaces.Box(low=0, high=1, shape=(116, 8, 8), dtype=np.float32),
-            'action_mask': gym.spaces.Box(low=0, high=1, shape=(4096,), dtype=np.int8)
+            'action_mask': gym.spaces.Box(low=0, high=1, shape=(ACTION_SPACE_SIZE,), dtype=np.int8)
         })
 
         self.board = chess.Board()
@@ -54,16 +55,7 @@ class SelfPlayChessEnv(gym.Env):
         """
         mover_color = self.board.turn  # Who is about to move
 
-        # Decode action
-        from_sq = action // 64
-        to_sq = action % 64
-        move = chess.Move(from_sq, to_sq)
-
-        # Handle pawn promotion (always Queen)
-        piece = self.board.piece_at(from_sq)
-        if piece and piece.piece_type == chess.PAWN:
-            if chess.square_rank(to_sq) in [0, 7]:
-                move.promotion = chess.QUEEN
+        move = action_to_move(action, self.board)
 
         # Verify legality
         if move not in self.board.legal_moves:
@@ -106,14 +98,7 @@ class SelfPlayChessEnv(gym.Env):
         """Get observation from current player's perspective."""
         obs_tensor = self.encoder.encode(self.board)
 
-        mask = torch.zeros(4096, dtype=torch.bool, device=self.device)
-        valid_indices = [
-            move.from_square * 64 + move.to_square
-            for move in self.board.legal_moves
-            if not move.promotion or move.promotion == chess.QUEEN
-        ]
-        if valid_indices:
-            mask[valid_indices] = True
+        mask = get_action_mask(self.board, device=self.device)
 
         return {
             'observation': obs_tensor,

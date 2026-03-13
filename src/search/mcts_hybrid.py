@@ -5,6 +5,7 @@ import torch
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass, field
+from src.core.action_encoding import move_to_action, ACTION_SPACE_SIZE
 import concurrent.futures
 
 @dataclass
@@ -201,10 +202,7 @@ class MCTSHybrid:
             probs = policy_probs[i]
 
             for move in board.legal_moves:
-                if move.promotion and move.promotion != chess.QUEEN:
-                    continue
-
-                action_idx = move.from_square * 64 + move.to_square
+                action_idx = move_to_action(move, board.turn)
                 prior = probs[action_idx]
 
                 child = MCTSNode(
@@ -231,7 +229,7 @@ class MCTSHybrid:
         return 0.0
 
     def _get_policy(self, root: MCTSNode) -> torch.Tensor:
-        policy = torch.zeros(4096, dtype=torch.float32, device=self.device)
+        policy = torch.zeros(ACTION_SPACE_SIZE, dtype=torch.float32, device=self.device)
         if not root.children:
             return policy
         for action_idx, child in root.children.items():

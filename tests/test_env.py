@@ -2,6 +2,7 @@ import unittest
 import torch
 import chess
 from src.core.chess_env import ChessEnv
+from src.core.action_encoding import move_to_action, ACTION_SPACE_SIZE
 
 class TestChessEnv(unittest.TestCase):
     def setUp(self):
@@ -10,7 +11,7 @@ class TestChessEnv(unittest.TestCase):
     def test_reset(self):
         obs, info = self.env.reset()
         self.assertEqual(obs['observation'].shape, (116, 8, 8))
-        self.assertEqual(obs['action_mask'].shape, (4096,))
+        self.assertEqual(obs['action_mask'].shape, (ACTION_SPACE_SIZE,))
         self.assertIsInstance(obs['observation'], torch.Tensor)
         self.assertIsInstance(obs['action_mask'], torch.Tensor)
         # Initial position has 20 legal moves
@@ -18,9 +19,9 @@ class TestChessEnv(unittest.TestCase):
 
     def test_step_pawn_push(self):
         self.env.reset()
-        # E2 (12) -> E4 (28)
-        # Action = 12 * 64 + 28 = 796
-        action = 12 * 64 + 28
+        # E2 -> E4 (White's perspective)
+        move = chess.Move.from_uci("e2e4")
+        action = move_to_action(move, chess.WHITE)
 
         obs, reward, terminated, truncated, info = self.env.step(action)
 
@@ -32,8 +33,8 @@ class TestChessEnv(unittest.TestCase):
     def test_illegal_move(self):
         self.env.reset()
         # E2 -> E5 (Illegal for white pawn)
-        # Action = 12 * 64 + 36
-        action = 12 * 64 + 36
+        move = chess.Move.from_uci("e2e5")
+        action = move_to_action(move, chess.WHITE)
 
         obs, reward, terminated, truncated, info = self.env.step(action)
 
@@ -51,9 +52,9 @@ class TestChessEnv(unittest.TestCase):
         # Black (to move) has Queen on d8.
         self.env.board = chess.Board("rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2")
 
-        # Move Qh4#
-        # From d8 (59) to h4 (31)
-        action = 59 * 64 + 31
+        # Move Qh4# (Black's perspective)
+        move = chess.Move.from_uci("d8h4")
+        action = move_to_action(move, chess.BLACK)
 
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.assertTrue(terminated)

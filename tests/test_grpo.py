@@ -5,7 +5,7 @@ import torch
 import chess
 from src.rl.grpo import GRPO
 from src.core.config import AppConfig
-from src.agents.ppo_agent import ChessAgent
+from src.agents.chess_agent import ChessAgent
 from src.core.state_encoder import StateEncoder
 
 def test_grpo_step():

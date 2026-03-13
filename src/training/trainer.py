@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 class GameSample:
     """Single training sample from a game for MCTS."""
     observation: torch.Tensor  # Board state encoding
-    mcts_policy: torch.Tensor  # MCTS visit distribution (4096,)
+    mcts_policy: torch.Tensor  # MCTS visit distribution (4672,)
     outcome: float             # Game outcome from this player's perspective
 
 @dataclass
@@ -311,7 +311,7 @@ def play_games_grpo(
             if not torch.isfinite(probs).all() or total <= 0.0:
                 legal_moves = list(start_board.legal_moves)
                 actions = torch.tensor(
-                    [_move_to_action_idx(random.choice(legal_moves)) for _ in range(group_size)],
+                    [_move_to_action_idx(random.choice(legal_moves), start_board) for _ in range(group_size)],
                     dtype=torch.long,
                 )
                 log_probs = torch.zeros(group_size)
@@ -624,17 +624,15 @@ def _backfill_rewards(trajectory: List[PPOSample], final_outcome: float):
 
 
 def _action_to_move(board: chess.Board, action_idx: int) -> chess.Move:
-    from_sq = action_idx // 64
-    to_sq = action_idx % 64
-    move = chess.Move(from_sq, to_sq)
-    if chess.square_rank(to_sq) in [0, 7]:
-        piece = board.piece_at(from_sq)
-        if piece and piece.piece_type == chess.PAWN:
-            move.promotion = chess.QUEEN
-    return move
+    from src.core.action_encoding import action_to_move
+    return action_to_move(action_idx, board)
 
-def _move_to_action_idx(move: chess.Move) -> int:
-    return move.from_square * 64 + move.to_square
+def _move_to_action_idx(move: chess.Move, board: chess.Board = None) -> int:
+    from src.core.action_encoding import move_to_action
+    # If board not provided, use WHITE as default perspective
+    # (caller must ensure board is provided for accurate encoding)
+    perspective = board.turn if board else chess.WHITE
+    return move_to_action(move, perspective)
 
 def _sample_action_from_policy(
     board: chess.Board,
@@ -648,7 +646,7 @@ def _sample_action_from_policy(
             logger.warning("Invalid policy: empty tensor")
         legal_moves = list(board.legal_moves)
         move = random.choice(legal_moves)
-        return _move_to_action_idx(move), 0.0
+        return _move_to_action_idx(move, board), 0.0
 
     policy = policy.float().cpu()
     total = float(policy.sum().item())
@@ -657,7 +655,7 @@ def _sample_action_from_policy(
             logger.warning(f"Invalid policy: finite={torch.isfinite(policy).all().item()} sum={total:.6f}")
         legal_moves = list(board.legal_moves)
         move = random.choice(legal_moves)
-        return _move_to_action_idx(move), 0.0
+        return _move_to_action_idx(move, board), 0.0
 
     if temperature > 0:
         action_idx = int(torch.multinomial(policy, 1).item())
@@ -1155,10 +1153,10 @@ def play_games_grpo_mcts(
             # We sample G actions from this distribution
             # If temperature is low, we might get duplicates. GRPO handles this.
 
-            # policy is [4096]
+            # policy is [4672]
             # MASK ILLEGAL MOVES to prevent crashes if MCTS desyncs
             legal_moves = list(board.legal_moves)
-            legal_action_indices = [_move_to_action_idx(m) for m in legal_moves]
+            legal_action_indices = [_move_to_action_idx(m, board) for m in legal_moves]
 
             # Create mask
             mask = torch.zeros_like(policy, dtype=torch.bool)

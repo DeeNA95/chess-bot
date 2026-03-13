@@ -22,7 +22,8 @@ except ImportError as e:
 
 def test_hybrid_mcts():
     # Setup
-    mock_model = lambda x: (torch.randn(len(x), 4096), torch.randn(len(x), 1))
+    from src.core.action_encoding import ACTION_SPACE_SIZE
+    mock_model = lambda x: (torch.randn(len(x), ACTION_SPACE_SIZE), torch.randn(len(x), 1))
     # StateEncoder mock logic (just identity or dummy)
     # Actually mcts_cpp.py uses mcts_cpp.encode_batch which is C++, so we just need a dummy Python wrapper if needed
     # But MCTS class interacts with C++ MCTS object directly.

@@ -3,12 +3,13 @@ import chess
 import time
 from src.search.mcts_cpp import MCTS
 from src.core.state_encoder import StateEncoder
+from src.core.action_encoding import ACTION_SPACE_SIZE
 
 class MockModel(torch.nn.Module):
     def forward(self, x):
         batch_size = x.shape[0]
         # Random policy, value
-        logits = torch.randn(batch_size, 4096)
+        logits = torch.randn(batch_size, ACTION_SPACE_SIZE)
         values = torch.tanh(torch.randn(batch_size, 1))
         return logits, values
 
@@ -24,7 +25,7 @@ def test_mcts_cpp_basic():
     policy, value = results[0]
     print(f"Value: {value:.4f}")
     print(f"Policy max prob: {policy.max().item():.4f}")
-    assert policy.shape == (4096,)
+    assert policy.shape == (ACTION_SPACE_SIZE,)
     assert -1.0 <= value <= 1.0
 
 def test_mcts_cpp_speed():

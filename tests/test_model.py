@@ -1,6 +1,7 @@
 import unittest
 import torch
 from src.models.transformer_net import ChessTransformerNetV2
+from src.core.action_encoding import ACTION_SPACE_SIZE
 
 class TestChessTransformerNetV2(unittest.TestCase):
     def test_forward_pass(self):
@@ -10,8 +11,8 @@ class TestChessTransformerNetV2(unittest.TestCase):
 
         policy, value = model(x)
 
-        # Policy: (B, 4096)
-        self.assertEqual(policy.shape, (4, 4096))
+        # Policy: (B, 4672)
+        self.assertEqual(policy.shape, (4, ACTION_SPACE_SIZE))
         # Value: (B, 1)
         self.assertEqual(value.shape, (4, 1))
 

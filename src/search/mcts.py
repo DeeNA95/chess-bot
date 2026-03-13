@@ -7,8 +7,9 @@ import math
 import chess
 import torch
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass, field
+from src.core.action_encoding import move_to_action, ACTION_SPACE_SIZE
 
 
 @dataclass
@@ -231,11 +232,7 @@ class MCTS:
 
             noise_idx = 0
             for move in board.legal_moves:
-                # AlphaZero standard: Queen promotion only (simplification)
-                if move.promotion and move.promotion != chess.QUEEN:
-                     continue
-
-                action_idx = move.from_square * 64 + move.to_square
+                action_idx = move_to_action(move, board.turn)
                 prior = probs[action_idx]
                 if apply_dirichlet and noise is not None:
                     # Root-only exploration noise (AlphaZero-style).
@@ -270,7 +267,7 @@ class MCTS:
 
     def _get_policy(self, root: MCTSNode) -> torch.Tensor:
         """Convert visit counts to policy distribution."""
-        policy = torch.zeros(4096, dtype=torch.float32, device=self.device)
+        policy = torch.zeros(ACTION_SPACE_SIZE, dtype=torch.float32, device=self.device)
 
         if not root.children:
             return policy
